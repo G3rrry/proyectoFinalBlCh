@@ -3,38 +3,32 @@ from initialize import BlockchainNode, Transaction, Block, ActionType
 
 
 def get_strict_input(node: BlockchainNode):
-    print("\n--- 🛡️ STRICT MODE: Existing Entities Only ---")
+    print("\n--- STRICT MODE: Existing Entities Only ---")
 
     # 1. Validate Sender
     sender = input("Sender Public Key: ").strip()
     if not node.participant_exists(sender):
-        print(f"❌ Error: Sender '{sender}' not found in database.")
+        print(f"Error: Sender '{sender}' not found in database.")
         return None
 
     # 2. Validate Receiver
     receiver = input("Receiver Public Key: ").strip()
     if not node.participant_exists(receiver):
-        print(f"❌ Error: Receiver '{receiver}' not found in database.")
+        print(f"Error: Receiver '{receiver}' not found in database.")
         return None
 
-    # 3. Validate Product (Unless it's being MANUFACTURED, logically implied)
-    # For this strict example, we will assume Product must exist unless we add logic for 'MANUFACTURED' exception.
-    # To keep it simple strict: Product must exist in system.
+    # 3. Validate Product
     product_id = input("Product ID: ").strip()
 
-    # Optional: Allow creation only if action is MANUFACTURED?
-    # For now, let's enforce strict existence check as requested.
     if not node.product_exists(product_id):
         print(
-            f"❌ Error: Product '{product_id}' not found. Use supreme_add_transaction.py to create it."
+            f"Error: Product '{product_id}' not found. Use supreme_add_transaction.py to create it."
         )
         return None
 
     # 4. Action
     while True:
-        print(
-            "Actions: [S]hipped, [R]eceived, [So]ld"
-        )  # 'Manufactured' removed as that implies creating new
+        print("Actions: [S]hipped, [R]eceived, [So]ld")
         c = input("Choice: ").strip().lower()
         if c == "s":
             action = ActionType.SHIPPED
@@ -65,9 +59,9 @@ if __name__ == "__main__":
         tx = get_strict_input(node)
         if tx:
             tx_pool.append(tx)
-            print("✅ Transaction added to pool.")
+            print("Transaction added to pool.")
         else:
-            print("⚠️ Transaction rejected due to validation failure.")
+            print("Transaction rejected due to validation failure.")
 
         if input("\nAttempt another? (y/n): ").lower() != "y":
             break

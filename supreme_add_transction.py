@@ -2,7 +2,7 @@ from initialize import BlockchainNode, Transaction, Block, ActionType
 
 
 def get_supreme_input():
-    print("\n--- ⚡ SUPREME MODE: Add New Entities/Transactions ---")
+    print("\n--- SUPREME MODE: Add New Entities/Transactions ---")
     sender = input("Sender: ").strip()
     receiver = input("Receiver: ").strip()
     product_id = input("Product ID: ").strip()

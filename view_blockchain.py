@@ -5,7 +5,7 @@ if __name__ == "__main__":
     node = BlockchainNode()
 
     print("\n" + "=" * 50)
-    print("🔎 BLOCKCHAIN VIEWER")
+    print("BLOCKCHAIN VIEWER")
     print("=" * 50)
 
     # 1. View Ledger
@@ -19,7 +19,7 @@ if __name__ == "__main__":
 
     # 2. View World State
     print("\n" + "=" * 50)
-    print("🌍 CURRENT WORLD STATE")
+    print("CURRENT WORLD STATE")
     print("=" * 50)
     print(f"{'Product':<15} | {'Owner':<15} | {'Location':<15} | {'Status':<15}")
     print("-" * 65)

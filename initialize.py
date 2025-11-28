@@ -179,9 +179,9 @@ class BlockchainNode:
                 )
 
             conn.commit()
-            print(f"✅ Block {block.index} saved successfully.")
+            print(f"Block {block.index} saved successfully.")
         except sqlite3.IntegrityError as e:
-            print(f"⚠️ Integrity Error: {e}")
+            print(f"Integrity Error: {e}")
         finally:
             conn.close()
 
@@ -239,4 +239,4 @@ class BlockchainNode:
 
 if __name__ == "__main__":
     node = BlockchainNode()
-    print("✅ Database initialized at 'transactions_DB.db'")
+    print("Database initialized at 'transactions_DB.db'")

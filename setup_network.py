@@ -12,6 +12,7 @@ FILES_TO_INSTALL = [
     "p2p.py",
     "add_transaction.py",
     "view_blockchain.py",
+    "validate.py",
 ]
 
 

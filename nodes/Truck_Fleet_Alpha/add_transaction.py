@@ -4,9 +4,7 @@ import sqlite3
 import sys
 import time
 
-# Ensure local modules can be imported
 sys.path.append(os.getcwd())
-
 from initialize import BlockchainNode, Transaction, Block, ActionType
 import p2p
 
@@ -15,204 +13,129 @@ def get_identity():
     current_dir = os.getcwd()
     node_name = os.path.basename(current_dir)
     key_path = "private_key.pem"
-
     if not os.path.exists(key_path):
         return None, None
-
     with open(key_path, "r") as f:
         private_key = f.read().strip()
-
     return node_name, private_key
 
 
-def list_my_shipments(node, my_pub_key):
-    """Fetch and display shipments owned by this node."""
-    conn = sqlite3.connect("blockchain.db")
-    cursor = conn.cursor()
-    query = """
-        SELECT s.shipment_id, g.name, s.quantity, g.unit_of_measure, s.current_location 
-        FROM shipments s 
-        JOIN goods g ON s.good_id = g.good_id 
-        WHERE s.current_owner_pk = ?
-    """
-    rows = cursor.execute(query, (my_pub_key,)).fetchall()
-    conn.close()
-    return rows
-
-
-def list_receivers(node, my_name):
-    """Fetch and display other participants."""
-    conn = sqlite3.connect("blockchain.db")
-    cursor = conn.cursor()
-    rows = cursor.execute(
-        "SELECT name, role FROM participants WHERE name != ?", (my_name,)
-    ).fetchall()
-    conn.close()
-    return rows
+def select_from_menu(items, title, formatter):
+    if not items:
+        print(f"\n--- {title} ---\n  (No items available)")
+        input("Press Enter to go back...")
+        return None
+    while True:
+        print(f"\n--- {title} ---")
+        for i, item in enumerate(items, 1):
+            print(f"{i}. {formatter(item)}")
+        print("b. Back")
+        choice = input("\nSelect: ").strip().lower()
+        if choice == "b":
+            return None
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(items):
+                return items[idx]
+            else:
+                print("Invalid.")
+        except:
+            print("Enter a number.")
 
 
 def main():
     node_name, priv_key = get_identity()
-
     if not node_name:
-        print("ERROR: Could not detect Node identity.")
-        print(
-            "Run this script FROM INSIDE a node directory (e.g., nodes/GlobalMining_Corp/)"
-        )
         return
 
-    node = BlockchainNode(node_name, "blockchain.db")
+    db_path = "blockchain.db"
+    node = BlockchainNode(node_name, db_path)
     sender_pub = node.get_public_key_by_name(node_name)
 
     while True:
-        print(f"\n" + "=" * 40)
-        print(f"--- {node_name.upper()} TERMINAL ---")
-        print("=" * 40)
-        print("1. [E]XTRACT / PROCESS (Create New Shipment)")
-        print("2. [S]HIP / TRANSFER   (Move Existing Shipment)")
-        print("3. [Q]UIT")
+        print(f"\n--- {node_name.upper()} WALLET (Mempool Mode) ---")
+        print("1. [E]XTRACT / PROCESS")
+        print("2. [S]HIP / TRANSFER")
+        print("3. [D]ESTROY / CONSUME")
+        print("4. [Q]UIT")
 
-        choice = input("\nSelect Action: ").strip().upper()
-
-        if choice in ["Q", "QUIT", "3"]:
-            print("Exiting...")
+        choice = input("Action: ").upper().strip()
+        if choice in ["Q", "4"]:
             break
 
         tx = None
-
-        # --- OPTION 1: EXTRACT ---
-        if choice in ["1", "E"]:
-            print("\n--- NEW SHIPMENT CREATION ---")
-
-            with sqlite3.connect("blockchain.db") as conn:
+        if choice == "1":
+            with sqlite3.connect(db_path) as conn:
                 goods = conn.execute(
                     "SELECT good_id, name, unit_of_measure FROM goods"
                 ).fetchall()
+            sel = select_from_menu(goods, "RESOURCE", lambda x: f"{x[1]} ({x[0]})")
+            if not sel:
+                continue
+            qty = float(input(f"Qty ({sel[2]}): "))
+            loc = input("Location: ")
+            tx = Transaction(
+                sender_pub,
+                sender_pub,
+                f"SHIP-{random.randint(10000, 99999)}",
+                ActionType.EXTRACTED,
+                loc,
+                sel[0],
+                qty,
+            )
 
-            print(f"{'ID':<10} | {'Name':<20} | {'Unit':<10}")
-            print("-" * 45)
-            for g in goods:
-                print(f"{g[0]:<10} | {g[1]:<20} | {g[2]:<10}")
-
-            while True:
-                good_id = input("\nEnter Good ID (or 'b' to back): ").strip()
-                if good_id.lower() == "b":
-                    break
-
-                # Validate Good ID
-                if not any(g[0] == good_id for g in goods):
-                    print("Invalid Good ID. Please try again.")
-                    continue
-
-                try:
-                    qty = float(input("Quantity: ").strip())
-                    if qty <= 0:
-                        raise ValueError
-                except ValueError:
-                    print("Quantity must be a positive number.")
-                    continue
-
-                loc = input("Location (e.g., Warehouse A): ").strip()
-                if not loc:
-                    print("Location is required.")
-                    continue
-
-                ship_id = f"SHIP-{random.randint(10000, 99999)}"
-                tx = Transaction(
-                    sender_pub,
-                    sender_pub,
-                    ship_id,
-                    ActionType.EXTRACTED,
-                    loc,
-                    good_id,
-                    qty,
-                )
-                break
-
-        # --- OPTION 2: SHIP ---
-        elif choice in ["2", "S"]:
-            print("\n--- TRANSFER SHIPMENT ---")
-
-            my_shipments = list_my_shipments(node, sender_pub)
-
-            if not my_shipments:
-                print(">> You have no shipments available to move.")
-                print(">> Try Extracting/Processing (Option 1) first.")
-                input("Press Enter to continue...")
+        elif choice == "2":
+            with sqlite3.connect(db_path) as conn:
+                ships = conn.execute(
+                    "SELECT shipment_id, g.name FROM shipments s JOIN goods g ON s.good_id=g.good_id WHERE s.current_owner_pk=?",
+                    (sender_pub,),
+                ).fetchall()
+            sel = select_from_menu(ships, "SHIPMENT", lambda x: f"{x[0]} ({x[1]})")
+            if not sel:
                 continue
 
-            print(
-                f"{'Shipment ID':<15} | {'Content':<20} | {'Qty':<15} | {'Location':<20}"
+            with sqlite3.connect(db_path) as conn:
+                partners = conn.execute(
+                    "SELECT name, role FROM participants WHERE name != ?", (node_name,)
+                ).fetchall()
+            rec = select_from_menu(partners, "RECEIVER", lambda x: f"{x[0]} ({x[1]})")
+            if not rec:
+                continue
+
+            rec_pub = node.get_public_key_by_name(rec[0])
+            loc = input("New Location: ")
+            tx = Transaction(sender_pub, rec_pub, sel[0], ActionType.SHIPPED, loc)
+
+        elif choice == "3":
+            with sqlite3.connect(db_path) as conn:
+                ships = conn.execute(
+                    "SELECT shipment_id, g.name FROM shipments s JOIN goods g ON s.good_id=g.good_id WHERE s.current_owner_pk=?",
+                    (sender_pub,),
+                ).fetchall()
+            sel = select_from_menu(ships, "DESTROY", lambda x: f"{x[0]} ({x[1]})")
+            if not sel:
+                continue
+            reason = input("Reason: ")
+            tx = Transaction(
+                sender_pub,
+                sender_pub,
+                sel[0],
+                ActionType.DESTROYED,
+                "Destroyed",
+                metadata={"reason": reason},
             )
-            print("-" * 75)
-            for s in my_shipments:
-                qty_str = f"{s[2]} {s[3]}"
-                print(f"{s[0]:<15} | {s[1]:<20} | {qty_str:<15} | {s[4]:<20}")
 
-            while True:
-                ship_id = input(
-                    "\nEnter Shipment ID to move (or 'b' to back): "
-                ).strip()
-                if ship_id.lower() == "b":
-                    break
-
-                # Verify ownership and existence
-                target_shipment = next(
-                    (s for s in my_shipments if s[0] == ship_id), None
-                )
-                if not target_shipment:
-                    print("Invalid ID or you do not own this shipment. Try again.")
-                    continue
-
-                # Select Receiver
-                receivers = list_receivers(node, node_name)
-                print("\nAvailable Partners:")
-                for r in receivers:
-                    print(f" - {r[0]} ({r[1]})")
-
-                rec_name = input("Receiver Name: ").strip()
-                rec_pub = node.get_public_key_by_name(rec_name)
-
-                if not rec_pub:
-                    print(f"Participant '{rec_name}' not found. Check spelling.")
-                    continue
-
-                loc = input("New Location: ").strip()
-                if not loc:
-                    print("Location is required.")
-                    continue
-
-                tx = Transaction(sender_pub, rec_pub, ship_id, ActionType.SHIPPED, loc)
-                break
-
-        else:
-            print("Invalid selection.")
-            continue
-
-        # --- EXECUTION PHASE ---
         if tx:
-            print(f"\nProcessing Transaction: {tx.action} {tx.shipment_id}...")
             if tx.sign_transaction(priv_key):
-                print("Signature Verified.")
-
-                last_block = node.get_last_block()
-                prev_hash = last_block.hash if last_block else "0" * 64
-                new_index = (last_block.index + 1) if last_block else 1
-
-                block = Block(new_index, [tx], prev_hash, node_name)
-
-                # Save locally
-                node.save_block_to_db(block)
-                print("Block mined and committed to LOCAL ledger.")
-
-                # Broadcast
-                print("Broadcasting to network...")
-                p2p.broadcast_block(node_name, block)
-
-                input("\nSuccess! Press Enter to return to menu...")
+                # BROADCAST TO MEMPOOL
+                print("Transaction signed. Broadcasting to network mempool...")
+                # Add to own mempool first
+                node.add_to_mempool(tx)
+                # Broadcast to others
+                p2p.broadcast_transaction(node_name, tx)
+                input("Sent to Mempool. Wait for a validator to mine it.")
             else:
-                print("Error: Signing failed. Check your private keys.")
-                time.sleep(2)
+                print("Sign failed.")
 
 
 if __name__ == "__main__":

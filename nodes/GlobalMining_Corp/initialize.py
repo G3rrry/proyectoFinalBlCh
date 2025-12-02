@@ -15,6 +15,7 @@ class ActionType(Enum):
     SHIPPED = "SHIPPED"
     RECEIVED = "RECEIVED"
     SOLD = "SOLD"
+    DESTROYED = "DESTROYED"
 
 
 class Transaction:
@@ -156,7 +157,7 @@ class BlockchainNode:
             "CREATE TABLE IF NOT EXISTS blocks (block_index INTEGER PRIMARY KEY, block_hash TEXT UNIQUE, previous_hash TEXT, validator TEXT, timestamp REAL, data TEXT)"
         )
         cursor.execute(
-            "CREATE TABLE IF NOT EXISTS participants (name TEXT UNIQUE, public_key TEXT PRIMARY KEY, role TEXT, reputation INTEGER DEFAULT 0)"
+            "CREATE TABLE IF NOT EXISTS participants (name TEXT UNIQUE, public_key TEXT PRIMARY KEY, role TEXT, reputation INTEGER DEFAULT 10)"
         )
         cursor.execute(
             "CREATE TABLE IF NOT EXISTS goods (good_id TEXT PRIMARY KEY, name TEXT, unit_of_measure TEXT)"
@@ -169,31 +170,127 @@ class BlockchainNode:
                 FOREIGN KEY(current_owner_pk) REFERENCES participants(public_key)
             )
         """)
+        # MEMPOOL TABLE
+        cursor.execute(
+            "CREATE TABLE IF NOT EXISTS mempool (tx_hash TEXT PRIMARY KEY, data TEXT, timestamp REAL)"
+        )
         conn.commit()
         conn.close()
 
-    def get_last_block(self):
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-        cursor.execute("SELECT data FROM blocks ORDER BY block_index DESC LIMIT 1")
-        row = cursor.fetchone()
-        conn.close()
-        if not row:
+    # --- 1. PROOF OF STAKE SELECTOR ---
+    def select_validator(self, previous_block_hash, seed_offset=0):
+        with sqlite3.connect(self.db_file) as conn:
+            participants = conn.execute(
+                "SELECT name, reputation FROM participants ORDER BY public_key"
+            ).fetchall()
+
+        if not participants:
             return None
-        return self.json_to_block(row[0])
+        total_stake = sum(p[1] for p in participants)
+        if total_stake == 0:
+            return participants[0][0]
 
-    def load_chain(self):
+        seed_str = f"{previous_block_hash}{seed_offset}"
+        seed_int = int(hashlib.sha256(seed_str.encode()).hexdigest(), 16)
+        winning_ticket = seed_int % total_stake
+
+        current_ticket = 0
+        for name, stake in participants:
+            current_ticket += stake
+            if current_ticket > winning_ticket:
+                return name
+        return participants[0][0]
+
+    # --- 2. SMART CONTRACT LOGIC ---
+    def validate_smart_contract_rules(self, tx: Transaction):
+        with sqlite3.connect(self.db_file) as conn:
+            shipment = conn.execute(
+                "SELECT current_owner_pk, last_action FROM shipments WHERE shipment_id = ?",
+                (tx.shipment_id,),
+            ).fetchone()
+
+        if tx.action == "EXTRACTED":
+            if shipment:
+                return False, "Shipment ID already exists."
+            return True, "Valid Extraction"
+
+        if not shipment:
+            return False, f"Shipment {tx.shipment_id} does not exist."
+        current_owner, last_action = shipment
+
+        if tx.sender != current_owner:
+            return False, "Sender is not the current owner."
+
+        # Rule: Cannot receive if not shipped
+        if tx.action == "RECEIVED" and last_action != "SHIPPED":
+            return False, "Cannot receive a shipment that wasn't shipped."
+
+        return True, "Smart Contract Validated"
+
+    def validate_block(self, block: Block):
+        last_block = self.get_last_block()
+        if block.index == 1:
+            if last_block is not None:
+                return False, "Genesis exists"
+            if block.previous_hash != "0" * 64:
+                return False, "Bad Genesis"
+            return True, "Valid Genesis"
+
+        if not last_block:
+            return False, "Gap detected"
+        if block.index != last_block.index + 1:
+            return False, "Invalid Index"
+        if block.previous_hash != last_block.hash:
+            return False, "Broken Chain"
+        if block.hash != block.calculate_block_hash():
+            return False, "Invalid Hash"
+
+        expected = self.select_validator(last_block.hash)
+        if block.validator != expected:
+            return False, f"PoS Fail: Expected {expected}"
+
+        for tx in block.transactions:
+            if not tx.is_valid():
+                return False, "Invalid Sig"
+            valid, reason = self.validate_smart_contract_rules(tx)
+            if not valid:
+                return False, f"Contract Fail: {reason}"
+
+        return True, "Valid"
+
+    # --- MEMPOOL OPERATIONS ---
+    def add_to_mempool(self, tx: Transaction):
+        if not tx.is_valid():
+            return False, "Invalid Signature"
         conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-        cursor.execute("SELECT data FROM blocks ORDER BY block_index ASC")
-        rows = cursor.fetchall()
-        conn.close()
-        return [self.json_to_block(row[0]) for row in rows]
+        try:
+            # FIX: Explicitly include signature in the stored JSON
+            tx_data = tx.to_dict()
+            tx_data["signature"] = tx.signature
+            conn.execute(
+                "INSERT OR IGNORE INTO mempool VALUES (?, ?, ?)",
+                (tx.tx_hash, json.dumps(tx_data), time.time()),
+            )
+            conn.commit()
+        except Exception as e:
+            print(f"Mempool error: {e}")
+        finally:
+            conn.close()
+        return True, "Added"
 
-    def json_to_block(self, json_str):
-        d = json.loads(json_str)
-        txs = [
-            Transaction(
+    def get_mempool_transactions(self):
+        conn = sqlite3.connect(self.db_file)
+        rows = conn.execute(
+            "SELECT data FROM mempool ORDER BY timestamp ASC"
+        ).fetchall()
+        conn.close()
+
+        txs = []
+        for row in rows:
+            t = json.loads(row[0])
+            # Handle signature retrieval safely
+            signature = t.get("signature")
+            tx = Transaction(
                 t["sender"],
                 t["receiver"],
                 t["shipment_id"],
@@ -203,58 +300,26 @@ class BlockchainNode:
                 t.get("quantity"),
                 t["metadata"],
                 t["timestamp"],
-                t.get("signature"),
+                signature,
             )
-            for t in d["transactions"]
-        ]
-        return Block(
-            d["index"],
-            txs,
-            d["previous_hash"],
-            d["validator"],
-            d["timestamp"],
-            d["hash"],
-        )
+            txs.append(tx)
+        return txs
 
-    def validate_block(self, block: Block):
-        last_block = self.get_last_block()
+    def clear_mempool(self, processed_txs: List[Transaction]):
+        conn = sqlite3.connect(self.db_file)
+        for tx in processed_txs:
+            conn.execute("DELETE FROM mempool WHERE tx_hash = ?", (tx.tx_hash,))
+        conn.commit()
+        conn.close()
 
-        # 1. Genesis check
-        if block.index == 1:
-            if last_block is not None:
-                return False, "Genesis block already exists"
-            if block.previous_hash != "0" * 64:
-                return False, "Invalid Genesis previous hash"
-            return True, "Valid Genesis"
-
-        # 2. Chain Continuity
-        if not last_block:
-            return False, "Chain gap detected"
-        if block.index != last_block.index + 1:
-            return False, f"Invalid Index {block.index}"
-        if block.previous_hash != last_block.hash:
-            return False, "Broken Chain Link"
-
-        # 3. Integrity Check
-        calculated = block.calculate_block_hash()
-        if block.hash != calculated:
-            return False, "Block Hash Invalid"
-
-        # 4. Transaction Validation
-        for tx in block.transactions:
-            if not tx.is_valid():
-                return False, f"Invalid Transaction Signature: {tx.tx_hash}"
-
-        return True, "Valid"
-
+    # --- BLOCK OPERATIONS ---
     def receive_block(self, block: Block):
-        """Called by P2P layer when receiving a block from a peer."""
         is_valid, reason = self.validate_block(block)
         if is_valid:
             self.save_block_to_db(block)
+            self.clear_mempool(block.transactions)
             return True, "Accepted"
-        else:
-            return False, f"Rejected ({reason})"
+        return False, f"Rejected ({reason})"
 
     def save_block_to_db(self, block: Block):
         conn = sqlite3.connect(self.db_file)
@@ -271,13 +336,14 @@ class BlockchainNode:
                     block.to_json(),
                 ),
             )
-
             for tx in block.transactions:
-                if tx.action in ["EXTRACTED", "PROCESSED"] and tx.quantity:
+                if tx.action == "DESTROYED":
                     cursor.execute(
-                        """
-                        INSERT OR REPLACE INTO shipments (shipment_id, good_id, quantity, current_owner_pk, current_location, last_action, last_updated_timestamp)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        "DELETE FROM shipments WHERE shipment_id = ?", (tx.shipment_id,)
+                    )
+                elif tx.action in ["EXTRACTED", "PROCESSED"] and tx.quantity:
+                    cursor.execute(
+                        "INSERT OR REPLACE INTO shipments (shipment_id, good_id, quantity, current_owner_pk, current_location, last_action, last_updated_timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
                         (
                             tx.shipment_id,
                             tx.good_id,
@@ -290,9 +356,7 @@ class BlockchainNode:
                     )
                 else:
                     cursor.execute(
-                        """
-                        UPDATE shipments SET current_owner_pk = ?, current_location = ?, last_action = ?, last_updated_timestamp = ?
-                        WHERE shipment_id = ?""",
+                        "UPDATE shipments SET current_owner_pk = ?, current_location = ?, last_action = ?, last_updated_timestamp = ? WHERE shipment_id = ?",
                         (
                             tx.receiver,
                             tx.location,
@@ -307,6 +371,48 @@ class BlockchainNode:
         finally:
             conn.close()
 
+    def get_last_block(self):
+        conn = sqlite3.connect(self.db_file)
+        row = conn.execute(
+            "SELECT data FROM blocks ORDER BY block_index DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        return self.json_to_block(row[0]) if row else None
+
+    def load_chain(self):
+        conn = sqlite3.connect(self.db_file)
+        rows = conn.execute(
+            "SELECT data FROM blocks ORDER BY block_index ASC"
+        ).fetchall()
+        conn.close()
+        return [self.json_to_block(row[0]) for row in rows]
+
+    def json_to_block(self, json_str):
+        d = json.loads(json_str)
+        txs = []
+        for t in d["transactions"]:
+            obj = Transaction(
+                t["sender"],
+                t["receiver"],
+                t["shipment_id"],
+                ActionType(t["action"]),
+                t["location"],
+                t.get("good_id"),
+                t.get("quantity"),
+                t["metadata"],
+                t["timestamp"],
+                t.get("signature"),
+            )
+            txs.append(obj)
+        return Block(
+            d["index"],
+            txs,
+            d["previous_hash"],
+            d["validator"],
+            d["timestamp"],
+            d["hash"],
+        )
+
     def get_public_key_by_name(self, name):
         with sqlite3.connect(self.db_file) as conn:
             res = conn.execute(
@@ -320,10 +426,3 @@ class BlockchainNode:
                 "SELECT name FROM participants WHERE public_key = ?", (pk,)
             ).fetchone()
         return res[0] if res else "Unknown"
-
-    def get_shipment(self, shipment_id):
-        with sqlite3.connect(self.db_file) as conn:
-            res = conn.execute(
-                "SELECT * FROM shipments WHERE shipment_id = ?", (shipment_id,)
-            ).fetchone()
-        return res

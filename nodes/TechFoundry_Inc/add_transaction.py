@@ -3,10 +3,26 @@ import random
 import sqlite3
 import sys
 import time
+import requests  # Added for HTTP P2P
 
 sys.path.append(os.getcwd())
+# We removed 'import p2p' because we now communicate via HTTP
 from blockchain_core import BlockchainNode, Transaction, ActionType
-import p2p
+
+# --- Configuration for Real Network ---
+PEERS = {
+    "Truck_Fleet_Alpha": 5001,
+    "TechFoundry_Inc": 5002,
+    "Pacific_Logistics": 5003,
+    "OPEC_Supplier": 5004,
+    "Mega_Consumer_Goods": 5005,
+    "GlobalMining_Corp": 5006,
+    "FreightTrain_Express": 5007,
+    "Drone_Delivery_X": 5008,
+    "Corner_Store": 5009,
+    "CleanWater_Services": 5010,
+    "CargoShip_EverGiven": 5011,
+}
 
 
 def get_identity():
@@ -18,6 +34,10 @@ def get_identity():
     with open(key_path, "r") as f:
         private_key = f.read().strip()
     return node_name, private_key
+
+
+def get_node_port(node_name):
+    return PEERS.get(node_name, 5000)
 
 
 def select_from_menu(items, title, formatter):
@@ -49,15 +69,23 @@ def main():
         print("Error: Could not find private_key.pem or node identity.")
         return
 
+    # Connection to Local P2P Node
+    my_port = get_node_port(node_name)
+    base_url = f"http://localhost:{my_port}"
+
     db_path = "blockchain.db"
+    # We initialize Node in Read-Only mode just for querying data
     node = BlockchainNode(node_name, db_path)
     sender_pub = node.get_public_key_by_name(node_name)
 
+    if not sender_pub:
+        print(f"Error: Public Key for {node_name} not found in DB.")
+        return
+
     while True:
         print(f"\n{'=' * 40}")
-        print(f" {node_name.upper()} WALLET (DPoS)")
+        print(f" {node_name.upper()} WALLET (Port {my_port})")
         print(f"{'=' * 40}")
-        # Cleaned up menu as requested
         print("1. Extract Resource   (E)")
         print("2. Manufacture Goods  (M)")
         print("3. Ship Goods         (S)")
@@ -323,22 +351,39 @@ def main():
                     )
                 )
 
-        # --- BATCH PROCESS ---
+        # --- BATCH PROCESS (Updated for Network) ---
         if txs:
             print(f"\nProcessing {len(txs)} transaction(s)...")
+
             for i, tx in enumerate(txs, 1):
+                # 1. Local Pre-Check (Optional but good UX)
                 is_valid_logic, error_msg = node.validate_smart_contract_rules(tx)
                 if not is_valid_logic:
                     print(f"    [!] Tx {i}/{len(txs)} FAILED LOCAL CHECK: {error_msg}")
                     continue
 
+                # 2. Sign
                 if tx.sign_transaction(priv_key):
-                    success, msg = node.add_to_mempool(tx)
-                    if success:
-                        print(f"    [+] Tx {i}/{len(txs)} Broadcasted ({tx.action})")
-                        p2p.broadcast_transaction(node_name, tx)
-                    else:
-                        print(f"    [!] Tx {i}/{len(txs)} Mempool Error: {msg}")
+                    # 3. Send to Local P2P Node via HTTP
+                    payload = tx.to_dict()
+                    payload["signature"] = tx.signature
+
+                    try:
+                        resp = requests.post(
+                            f"{base_url}/transaction", json=payload, timeout=2
+                        )
+                        if resp.status_code == 201:
+                            print(
+                                f"    [+] Tx {i}/{len(txs)} Broadcasted ({tx.action})"
+                            )
+                        else:
+                            print(
+                                f"    [!] Tx {i}/{len(txs)} Rejected by Node: {resp.text}"
+                            )
+                    except requests.exceptions.ConnectionError:
+                        print(
+                            f"    [X] Error: Could not connect to {base_url}. Is 'p2p.py' running?"
+                        )
                 else:
                     print(f"    [!] Tx {i}/{len(txs)} Signing Failed.")
 

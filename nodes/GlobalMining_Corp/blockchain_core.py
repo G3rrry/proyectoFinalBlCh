@@ -142,10 +142,35 @@ class Block:
             }
         )
 
+    @staticmethod
+    def from_json(json_str):
+        d = json.loads(json_str)
+        txs = [
+            Transaction(
+                t["sender"],
+                t["receiver"],
+                t["shipment_id"],
+                ActionType(t["action"]),
+                t["location"],
+                t.get("good_id"),
+                t.get("quantity"),
+                t["metadata"],
+                t["timestamp"],
+                t.get("signature"),
+            )
+            for t in d["transactions"]
+        ]
+        return Block(
+            d["index"],
+            txs,
+            d["previous_hash"],
+            d["validator"],
+            d["timestamp"],
+            d["hash"],
+        )
+
 
 # --- Blockchain Node Logic ---
-
-
 class BlockchainNode:
     def __init__(self, node_name="Unknown", db_path="blockchain.db"):
         self.node_name = node_name
@@ -164,14 +189,9 @@ class BlockchainNode:
         cursor.execute(
             "CREATE TABLE IF NOT EXISTS goods (good_id TEXT PRIMARY KEY, name TEXT, unit_of_measure TEXT)"
         )
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS shipments (
-                shipment_id TEXT PRIMARY KEY, good_id TEXT, quantity REAL, current_owner_pk TEXT, 
-                current_location TEXT, last_action TEXT, last_updated_timestamp REAL, is_active INTEGER DEFAULT 1,
-                FOREIGN KEY(good_id) REFERENCES goods(good_id),
-                FOREIGN KEY(current_owner_pk) REFERENCES participants(public_key)
-            )
-        """)
+        cursor.execute(
+            "CREATE TABLE IF NOT EXISTS shipments (shipment_id TEXT PRIMARY KEY, good_id TEXT, quantity REAL, current_owner_pk TEXT, current_location TEXT, last_action TEXT, last_updated_timestamp REAL, is_active INTEGER DEFAULT 1)"
+        )
         cursor.execute(
             "CREATE TABLE IF NOT EXISTS mempool (tx_hash TEXT PRIMARY KEY, data TEXT, timestamp REAL)"
         )
@@ -221,33 +241,31 @@ class BlockchainNode:
                 ).fetchone()
 
         if tx.action in ["EXTRACTED", "MANUFACTURED"]:
-            if not shipment_data:
-                return True, f"Valid {tx.action} (New Asset)"
-            if tx.action == "EXTRACTED":
-                return False, f"Shipment {tx.shipment_id} already exists."
+            if shipment_data:
+                _, _, is_active = shipment_data
+                if is_active == 1:
+                    return False, f"Shipment {tx.shipment_id} already active."
+            return True, f"Valid {tx.action} (New Asset)"
 
         if not shipment_data:
             return False, f"Shipment {tx.shipment_id} does not exist."
 
-        if found_in_temp:
-            current_owner, last_action, is_active = shipment_data
-        else:
-            current_owner, last_action, is_active = shipment_data
+        current_owner, last_action, is_active = shipment_data
 
         if is_active == 0:
-            return False, f"Shipment {tx.shipment_id} is inactive (Destroyed/Consumed)."
-
+            return False, f"Shipment {tx.shipment_id} is inactive."
         if tx.sender != current_owner:
             return False, f"Sender is not the current owner."
 
-        if tx.action == "RECEIVED":
-            if last_action == "SHIPPED":
-                return True, "Valid Receipt"
-            if tx.sender == current_owner:
-                return True, "Valid Internal Update"
-            return False, "Cannot receive a shipment that wasn't shipped."
-
         return True, "Smart Contract Validated"
+
+    def receive_block(self, block: Block):
+        is_valid, reason = self.validate_block(block)
+        if is_valid:
+            self.save_block_to_db(block)
+            self.clear_mempool(block.transactions)
+            return True, "Accepted"
+        return False, f"Rejected ({reason})"
 
     def validate_block(self, block: Block):
         last_block = self.get_last_block()
@@ -257,7 +275,6 @@ class BlockchainNode:
             if block.previous_hash != "0" * 64:
                 return False, "Bad Genesis"
             return True, "Valid Genesis"
-
         if not last_block:
             return False, "Gap detected"
         if block.index != last_block.index + 1:
@@ -266,47 +283,88 @@ class BlockchainNode:
             return False, "Broken Chain"
         if block.hash != block.calculate_block_hash():
             return False, "Invalid Hash"
-
-        expected = self.select_validator(last_block.hash)
-        if block.validator != expected:
-            return False, f"DPoS Fail: Expected {expected}"
-
-        temp_state = {}
-        for tx in block.transactions:
-            if not tx.is_valid():
-                return False, "Invalid Sig"
-
-            valid, reason = self.validate_smart_contract_rules(tx, temp_state)
-            if not valid:
-                return False, f"Contract Fail: {reason}"
-
-            if tx.action in ["DESTROYED", "CONSUMED"]:
-                temp_state[tx.shipment_id] = (tx.sender, tx.action, 0)
-            elif tx.action in [
-                "EXTRACTED",
-                "MANUFACTURED",
-                "SHIPPED",
-                "RECEIVED",
-                "SOLD",
-            ]:
-                temp_state[tx.shipment_id] = (tx.receiver, tx.action, 1)
-
         return True, "Valid"
+
+    def save_block_to_db(self, block: Block):
+        conn = sqlite3.connect(self.db_file)
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "INSERT INTO blocks (block_index, block_hash, previous_hash, validator, timestamp, data) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    block.index,
+                    block.hash,
+                    block.previous_hash,
+                    block.validator,
+                    block.timestamp,
+                    block.to_json(),
+                ),
+            )
+
+            for tx in block.transactions:
+                if tx.action == "VOTE":
+                    cursor.execute(
+                        "UPDATE participants SET votes = votes + 1 WHERE public_key = ?",
+                        (tx.receiver,),
+                    )
+                elif tx.action in ["DESTROYED", "CONSUMED"]:
+                    cursor.execute(
+                        "UPDATE shipments SET is_active = 0, last_action = ?, last_updated_timestamp = ? WHERE shipment_id = ?",
+                        (tx.action, tx.timestamp, tx.shipment_id),
+                    )
+                elif tx.action in ["EXTRACTED", "MANUFACTURED"]:
+                    cursor.execute(
+                        """
+                        INSERT OR REPLACE INTO shipments (shipment_id, good_id, quantity, current_owner_pk, current_location, last_action, last_updated_timestamp, is_active) 
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+                    """,
+                        (
+                            tx.shipment_id,
+                            tx.good_id,
+                            tx.quantity,
+                            tx.receiver,
+                            tx.location,
+                            tx.action,
+                            tx.timestamp,
+                        ),
+                    )
+                else:
+                    q_sql = ", quantity = ?" if tx.quantity is not None else ""
+                    params = [tx.receiver, tx.location, tx.action, tx.timestamp]
+                    if tx.quantity is not None:
+                        params.append(tx.quantity)
+                    params.append(tx.shipment_id)
+                    cursor.execute(
+                        f"UPDATE shipments SET current_owner_pk = ?, current_location = ?, last_action = ?, last_updated_timestamp = ?, is_active = 1 {q_sql} WHERE shipment_id = ?",
+                        params,
+                    )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            pass
+        finally:
+            conn.close()
 
     def add_to_mempool(self, tx: Transaction):
         if not tx.is_valid():
             return False, "Invalid Signature"
         conn = sqlite3.connect(self.db_file)
         try:
+            # CHECK FOR DUPLICATE FIRST to support gossiping
+            cursor = conn.execute(
+                "SELECT 1 FROM mempool WHERE tx_hash = ?", (tx.tx_hash,)
+            )
+            if cursor.fetchone():
+                return False, "Duplicate"
+
             tx_data = tx.to_dict()
             tx_data["signature"] = tx.signature
             conn.execute(
-                "INSERT OR IGNORE INTO mempool VALUES (?, ?, ?)",
+                "INSERT INTO mempool VALUES (?, ?, ?)",
                 (tx.tx_hash, json.dumps(tx_data), time.time()),
             )
             conn.commit()
         except Exception as e:
-            print(f"Mempool error: {e}")
+            return False, str(e)
         finally:
             conn.close()
         return True, "Added"
@@ -342,111 +400,21 @@ class BlockchainNode:
         conn.commit()
         conn.close()
 
-    def receive_block(self, block: Block):
-        is_valid, reason = self.validate_block(block)
-        if is_valid:
-            self.save_block_to_db(block)
-            self.clear_mempool(block.transactions)
-            return True, "Accepted"
-        return False, f"Rejected ({reason})"
-
-    def save_block_to_db(self, block: Block):
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-        try:
-            cursor.execute(
-                "INSERT INTO blocks (block_index, block_hash, previous_hash, validator, timestamp, data) VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    block.index,
-                    block.hash,
-                    block.previous_hash,
-                    block.validator,
-                    block.timestamp,
-                    block.to_json(),
-                ),
-            )
-
-            for tx in block.transactions:
-                if tx.action == "VOTE":
-                    cursor.execute(
-                        "UPDATE participants SET votes = votes + 1 WHERE public_key = ?",
-                        (tx.receiver,),
-                    )
-
-                elif tx.action in ["DESTROYED", "CONSUMED"]:
-                    cursor.execute(
-                        "UPDATE shipments SET is_active = 0, last_action = ?, last_updated_timestamp = ? WHERE shipment_id = ?",
-                        (tx.action, tx.timestamp, tx.shipment_id),
-                    )
-
-                elif tx.action in ["EXTRACTED", "MANUFACTURED"] and tx.quantity:
-                    # Insert or Update (for manufactured, often treated as new)
-                    # If manufacturing re-uses an ID (unlikely with our logic but possible), this handles it
-                    cursor.execute(
-                        """
-                        INSERT OR REPLACE INTO shipments 
-                        (shipment_id, good_id, quantity, current_owner_pk, current_location, last_action, last_updated_timestamp, is_active) 
-                        VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-                    """,
-                        (
-                            tx.shipment_id,
-                            tx.good_id,
-                            tx.quantity,
-                            tx.receiver,
-                            tx.location,
-                            tx.action,
-                            tx.timestamp,
-                        ),
-                    )
-
-                else:
-                    # This handles SHIPPED, RECEIVED, SOLD, etc.
-                    # FIX: Explicitly update Quantity if provided in the transaction
-                    if tx.quantity is not None:
-                        cursor.execute(
-                            """
-                            UPDATE shipments 
-                            SET current_owner_pk = ?, current_location = ?, last_action = ?, last_updated_timestamp = ?, is_active = 1, quantity = ?
-                            WHERE shipment_id = ?
-                        """,
-                            (
-                                tx.receiver,
-                                tx.location,
-                                tx.action,
-                                tx.timestamp,
-                                tx.quantity,
-                                tx.shipment_id,
-                            ),
-                        )
-                    else:
-                        cursor.execute(
-                            """
-                            UPDATE shipments 
-                            SET current_owner_pk = ?, current_location = ?, last_action = ?, last_updated_timestamp = ?, is_active = 1 
-                            WHERE shipment_id = ?
-                        """,
-                            (
-                                tx.receiver,
-                                tx.location,
-                                tx.action,
-                                tx.timestamp,
-                                tx.shipment_id,
-                            ),
-                        )
-
-            conn.commit()
-        except sqlite3.IntegrityError:
-            pass
-        finally:
-            conn.close()
-
     def get_last_block(self):
         conn = sqlite3.connect(self.db_file)
         row = conn.execute(
             "SELECT data FROM blocks ORDER BY block_index DESC LIMIT 1"
         ).fetchone()
         conn.close()
-        return self.json_to_block(row[0]) if row else None
+        return Block.from_json(row[0]) if row else None
+
+    def get_block_by_index(self, index):
+        conn = sqlite3.connect(self.db_file)
+        row = conn.execute(
+            "SELECT data FROM blocks WHERE block_index = ?", (index,)
+        ).fetchone()
+        conn.close()
+        return Block.from_json(row[0]) if row else None
 
     def load_chain(self):
         conn = sqlite3.connect(self.db_file)
@@ -454,34 +422,7 @@ class BlockchainNode:
             "SELECT data FROM blocks ORDER BY block_index ASC"
         ).fetchall()
         conn.close()
-        return [self.json_to_block(row[0]) for row in rows]
-
-    def json_to_block(self, json_str):
-        d = json.loads(json_str)
-        txs = []
-        for t in d["transactions"]:
-            txs.append(
-                Transaction(
-                    t["sender"],
-                    t["receiver"],
-                    t["shipment_id"],
-                    ActionType(t["action"]),
-                    t["location"],
-                    t.get("good_id"),
-                    t.get("quantity"),
-                    t["metadata"],
-                    t["timestamp"],
-                    t.get("signature"),
-                )
-            )
-        return Block(
-            d["index"],
-            txs,
-            d["previous_hash"],
-            d["validator"],
-            d["timestamp"],
-            d["hash"],
-        )
+        return [Block.from_json(row[0]) for row in rows]
 
     def get_public_key_by_name(self, name):
         with sqlite3.connect(self.db_file) as conn:

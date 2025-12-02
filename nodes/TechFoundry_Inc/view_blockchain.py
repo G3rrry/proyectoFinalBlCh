@@ -96,7 +96,7 @@ def view_local_ledger():
 
     for i, (name, votes) in enumerate(delegates):
         status = "ACTIVE WITNESS" if i < 3 else "Standby"
-        prefix = "★ " if i < 3 else "  "
+        prefix = " --(Active)-- " if i < 3 else "  "
         print(f"{prefix}{name:<28} | {votes:<10} | {status}")
 
     print("\n" + "#" * 40 + " WORLD STATE (Active Inventory) " + "#" * 40)

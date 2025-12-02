@@ -3,7 +3,7 @@ import sys
 import time
 
 sys.path.append(os.getcwd())
-from initialize import BlockchainNode, Block
+from blockchain_core import BlockchainNode, Block  # Changed Import
 import p2p
 
 
@@ -16,16 +16,13 @@ def get_identity():
 def main():
     node_name = get_identity()
     db_path = "blockchain.db"
-
     if not os.path.exists(db_path):
         print("Error: Run inside a node folder.")
         return
 
     node = BlockchainNode(node_name, db_path)
-
     print(f"\n--- {node_name.upper()} VALIDATOR DASHBOARD ---")
 
-    # 1. Check if eligible
     last_block = node.get_last_block()
     prev_hash = last_block.hash if last_block else "0" * 64
     expected_validator = node.select_validator(prev_hash)
@@ -39,16 +36,12 @@ def main():
         return
 
     print("\n[+] You ARE the elected validator!")
-
-    # 2. Check Mempool
     pending_txs = node.get_mempool_transactions()
     if not pending_txs:
         print("    Mempool is empty. Nothing to mine.")
         return
 
     print(f"    Found {len(pending_txs)} pending transactions.")
-
-    # 3. Validate Transactions against Smart Contracts
     valid_txs = []
     for tx in pending_txs:
         is_valid, msg = node.validate_smart_contract_rules(tx)
@@ -60,22 +53,17 @@ def main():
 
     if not valid_txs:
         print("    No valid transactions remaining.")
-        # Optional: You could mine an empty block to keep chain moving,
-        # but for this supply chain demo we wait for data.
         return
 
-    # 4. Forge Block
     new_index = (last_block.index + 1) if last_block else 1
     new_block = Block(new_index, valid_txs, prev_hash, node_name)
 
     print(f"\n[+] Minting Block #{new_index}...")
     print(f"    Hash: {new_block.hash}")
 
-    # 5. Save & Broadcast
     node.save_block_to_db(new_block)
-    node.clear_mempool(valid_txs)  # Remove from local mempool
+    node.clear_mempool(valid_txs)
     print("    Block saved locally.")
-
     p2p.broadcast_block(node_name, new_block)
     print("    Block broadcasted to network.")
 

@@ -11,11 +11,13 @@ from ecdsa import SigningKey, VerifyingKey, SECP256k1, BadSignatureError
 # --- Data Models ---
 class ActionType(Enum):
     EXTRACTED = "EXTRACTED"
-    PROCESSED = "PROCESSED"
+    MANUFACTURED = "MANUFACTURED"
     SHIPPED = "SHIPPED"
     RECEIVED = "RECEIVED"
     SOLD = "SOLD"
     DESTROYED = "DESTROYED"
+    CONSUMED = "CONSUMED"
+    VOTE = "VOTE"
 
 
 class Transaction:
@@ -157,7 +159,7 @@ class BlockchainNode:
             "CREATE TABLE IF NOT EXISTS blocks (block_index INTEGER PRIMARY KEY, block_hash TEXT UNIQUE, previous_hash TEXT, validator TEXT, timestamp REAL, data TEXT)"
         )
         cursor.execute(
-            "CREATE TABLE IF NOT EXISTS participants (name TEXT UNIQUE, public_key TEXT PRIMARY KEY, role TEXT, reputation INTEGER DEFAULT 10)"
+            "CREATE TABLE IF NOT EXISTS participants (name TEXT UNIQUE, public_key TEXT PRIMARY KEY, role TEXT, reputation INTEGER DEFAULT 10, votes INTEGER DEFAULT 0)"
         )
         cursor.execute(
             "CREATE TABLE IF NOT EXISTS goods (good_id TEXT PRIMARY KEY, name TEXT, unit_of_measure TEXT)"
@@ -165,64 +167,84 @@ class BlockchainNode:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS shipments (
                 shipment_id TEXT PRIMARY KEY, good_id TEXT, quantity REAL, current_owner_pk TEXT, 
-                current_location TEXT, last_action TEXT, last_updated_timestamp REAL,
+                current_location TEXT, last_action TEXT, last_updated_timestamp REAL, is_active INTEGER DEFAULT 1,
                 FOREIGN KEY(good_id) REFERENCES goods(good_id),
                 FOREIGN KEY(current_owner_pk) REFERENCES participants(public_key)
             )
         """)
-        # MEMPOOL TABLE
         cursor.execute(
             "CREATE TABLE IF NOT EXISTS mempool (tx_hash TEXT PRIMARY KEY, data TEXT, timestamp REAL)"
         )
         conn.commit()
         conn.close()
 
-    # --- 1. PROOF OF STAKE SELECTOR ---
     def select_validator(self, previous_block_hash, seed_offset=0):
         with sqlite3.connect(self.db_file) as conn:
-            participants = conn.execute(
-                "SELECT name, reputation FROM participants ORDER BY public_key"
+            delegates = conn.execute(
+                "SELECT name FROM participants ORDER BY votes DESC, name ASC LIMIT 3"
             ).fetchall()
 
-        if not participants:
-            return None
-        total_stake = sum(p[1] for p in participants)
-        if total_stake == 0:
-            return participants[0][0]
+        if not delegates:
+            with sqlite3.connect(self.db_file) as conn:
+                fallback = conn.execute(
+                    "SELECT name FROM participants LIMIT 1"
+                ).fetchone()
+            return fallback[0] if fallback else "Unknown"
 
         seed_str = f"{previous_block_hash}{seed_offset}"
         seed_int = int(hashlib.sha256(seed_str.encode()).hexdigest(), 16)
-        winning_ticket = seed_int % total_stake
+        winner_index = seed_int % len(delegates)
+        return delegates[winner_index][0]
 
-        current_ticket = 0
-        for name, stake in participants:
-            current_ticket += stake
-            if current_ticket > winning_ticket:
-                return name
-        return participants[0][0]
+    def validate_smart_contract_rules(
+        self, tx: Transaction, temp_state: Dict[str, Any] = None
+    ):
+        if tx.action == "VOTE":
+            with sqlite3.connect(self.db_file) as conn:
+                exists = conn.execute(
+                    "SELECT 1 FROM participants WHERE public_key=?", (tx.receiver,)
+                ).fetchone()
+            return (True, "Valid Vote") if exists else (False, "Candidate unknown")
 
-    # --- 2. SMART CONTRACT LOGIC ---
-    def validate_smart_contract_rules(self, tx: Transaction):
-        with sqlite3.connect(self.db_file) as conn:
-            shipment = conn.execute(
-                "SELECT current_owner_pk, last_action FROM shipments WHERE shipment_id = ?",
-                (tx.shipment_id,),
-            ).fetchone()
+        shipment_data = None
+        found_in_temp = False
 
-        if tx.action == "EXTRACTED":
-            if shipment:
-                return False, "Shipment ID already exists."
-            return True, "Valid Extraction"
+        if temp_state and tx.shipment_id in temp_state:
+            shipment_data = temp_state[tx.shipment_id]
+            found_in_temp = True
 
-        if not shipment:
+        if not found_in_temp:
+            with sqlite3.connect(self.db_file) as conn:
+                shipment_data = conn.execute(
+                    "SELECT current_owner_pk, last_action, is_active FROM shipments WHERE shipment_id = ?",
+                    (tx.shipment_id,),
+                ).fetchone()
+
+        if tx.action in ["EXTRACTED", "MANUFACTURED"]:
+            if not shipment_data:
+                return True, f"Valid {tx.action} (New Asset)"
+            if tx.action == "EXTRACTED":
+                return False, f"Shipment {tx.shipment_id} already exists."
+
+        if not shipment_data:
             return False, f"Shipment {tx.shipment_id} does not exist."
-        current_owner, last_action = shipment
+
+        if found_in_temp:
+            current_owner, last_action, is_active = shipment_data
+        else:
+            current_owner, last_action, is_active = shipment_data
+
+        if is_active == 0:
+            return False, f"Shipment {tx.shipment_id} is inactive (Destroyed/Consumed)."
 
         if tx.sender != current_owner:
-            return False, "Sender is not the current owner."
+            return False, f"Sender is not the current owner."
 
-        # Rule: Cannot receive if not shipped
-        if tx.action == "RECEIVED" and last_action != "SHIPPED":
+        if tx.action == "RECEIVED":
+            if last_action == "SHIPPED":
+                return True, "Valid Receipt"
+            if tx.sender == current_owner:
+                return True, "Valid Internal Update"
             return False, "Cannot receive a shipment that wasn't shipped."
 
         return True, "Smart Contract Validated"
@@ -230,7 +252,7 @@ class BlockchainNode:
     def validate_block(self, block: Block):
         last_block = self.get_last_block()
         if block.index == 1:
-            if last_block is not None:
+            if last_block:
                 return False, "Genesis exists"
             if block.previous_hash != "0" * 64:
                 return False, "Bad Genesis"
@@ -247,24 +269,35 @@ class BlockchainNode:
 
         expected = self.select_validator(last_block.hash)
         if block.validator != expected:
-            return False, f"PoS Fail: Expected {expected}"
+            return False, f"DPoS Fail: Expected {expected}"
 
+        temp_state = {}
         for tx in block.transactions:
             if not tx.is_valid():
                 return False, "Invalid Sig"
-            valid, reason = self.validate_smart_contract_rules(tx)
+
+            valid, reason = self.validate_smart_contract_rules(tx, temp_state)
             if not valid:
                 return False, f"Contract Fail: {reason}"
 
+            if tx.action in ["DESTROYED", "CONSUMED"]:
+                temp_state[tx.shipment_id] = (tx.sender, tx.action, 0)
+            elif tx.action in [
+                "EXTRACTED",
+                "MANUFACTURED",
+                "SHIPPED",
+                "RECEIVED",
+                "SOLD",
+            ]:
+                temp_state[tx.shipment_id] = (tx.receiver, tx.action, 1)
+
         return True, "Valid"
 
-    # --- MEMPOOL OPERATIONS ---
     def add_to_mempool(self, tx: Transaction):
         if not tx.is_valid():
             return False, "Invalid Signature"
         conn = sqlite3.connect(self.db_file)
         try:
-            # FIX: Explicitly include signature in the stored JSON
             tx_data = tx.to_dict()
             tx_data["signature"] = tx.signature
             conn.execute(
@@ -284,12 +317,9 @@ class BlockchainNode:
             "SELECT data FROM mempool ORDER BY timestamp ASC"
         ).fetchall()
         conn.close()
-
         txs = []
         for row in rows:
             t = json.loads(row[0])
-            # Handle signature retrieval safely
-            signature = t.get("signature")
             tx = Transaction(
                 t["sender"],
                 t["receiver"],
@@ -300,7 +330,7 @@ class BlockchainNode:
                 t.get("quantity"),
                 t["metadata"],
                 t["timestamp"],
-                signature,
+                t.get("signature"),
             )
             txs.append(tx)
         return txs
@@ -312,7 +342,6 @@ class BlockchainNode:
         conn.commit()
         conn.close()
 
-    # --- BLOCK OPERATIONS ---
     def receive_block(self, block: Block):
         is_valid, reason = self.validate_block(block)
         if is_valid:
@@ -336,14 +365,29 @@ class BlockchainNode:
                     block.to_json(),
                 ),
             )
+
             for tx in block.transactions:
-                if tx.action == "DESTROYED":
+                if tx.action == "VOTE":
                     cursor.execute(
-                        "DELETE FROM shipments WHERE shipment_id = ?", (tx.shipment_id,)
+                        "UPDATE participants SET votes = votes + 1 WHERE public_key = ?",
+                        (tx.receiver,),
                     )
-                elif tx.action in ["EXTRACTED", "PROCESSED"] and tx.quantity:
+
+                elif tx.action in ["DESTROYED", "CONSUMED"]:
                     cursor.execute(
-                        "INSERT OR REPLACE INTO shipments (shipment_id, good_id, quantity, current_owner_pk, current_location, last_action, last_updated_timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        "UPDATE shipments SET is_active = 0, last_action = ?, last_updated_timestamp = ? WHERE shipment_id = ?",
+                        (tx.action, tx.timestamp, tx.shipment_id),
+                    )
+
+                elif tx.action in ["EXTRACTED", "MANUFACTURED"] and tx.quantity:
+                    # Insert or Update (for manufactured, often treated as new)
+                    # If manufacturing re-uses an ID (unlikely with our logic but possible), this handles it
+                    cursor.execute(
+                        """
+                        INSERT OR REPLACE INTO shipments 
+                        (shipment_id, good_id, quantity, current_owner_pk, current_location, last_action, last_updated_timestamp, is_active) 
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+                    """,
                         (
                             tx.shipment_id,
                             tx.good_id,
@@ -354,17 +398,42 @@ class BlockchainNode:
                             tx.timestamp,
                         ),
                     )
+
                 else:
-                    cursor.execute(
-                        "UPDATE shipments SET current_owner_pk = ?, current_location = ?, last_action = ?, last_updated_timestamp = ? WHERE shipment_id = ?",
-                        (
-                            tx.receiver,
-                            tx.location,
-                            tx.action,
-                            tx.timestamp,
-                            tx.shipment_id,
-                        ),
-                    )
+                    # This handles SHIPPED, RECEIVED, SOLD, etc.
+                    # FIX: Explicitly update Quantity if provided in the transaction
+                    if tx.quantity is not None:
+                        cursor.execute(
+                            """
+                            UPDATE shipments 
+                            SET current_owner_pk = ?, current_location = ?, last_action = ?, last_updated_timestamp = ?, is_active = 1, quantity = ?
+                            WHERE shipment_id = ?
+                        """,
+                            (
+                                tx.receiver,
+                                tx.location,
+                                tx.action,
+                                tx.timestamp,
+                                tx.quantity,
+                                tx.shipment_id,
+                            ),
+                        )
+                    else:
+                        cursor.execute(
+                            """
+                            UPDATE shipments 
+                            SET current_owner_pk = ?, current_location = ?, last_action = ?, last_updated_timestamp = ?, is_active = 1 
+                            WHERE shipment_id = ?
+                        """,
+                            (
+                                tx.receiver,
+                                tx.location,
+                                tx.action,
+                                tx.timestamp,
+                                tx.shipment_id,
+                            ),
+                        )
+
             conn.commit()
         except sqlite3.IntegrityError:
             pass
@@ -391,19 +460,20 @@ class BlockchainNode:
         d = json.loads(json_str)
         txs = []
         for t in d["transactions"]:
-            obj = Transaction(
-                t["sender"],
-                t["receiver"],
-                t["shipment_id"],
-                ActionType(t["action"]),
-                t["location"],
-                t.get("good_id"),
-                t.get("quantity"),
-                t["metadata"],
-                t["timestamp"],
-                t.get("signature"),
+            txs.append(
+                Transaction(
+                    t["sender"],
+                    t["receiver"],
+                    t["shipment_id"],
+                    ActionType(t["action"]),
+                    t["location"],
+                    t.get("good_id"),
+                    t.get("quantity"),
+                    t["metadata"],
+                    t["timestamp"],
+                    t.get("signature"),
+                )
             )
-            txs.append(obj)
         return Block(
             d["index"],
             txs,

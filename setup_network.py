@@ -2,13 +2,13 @@ import os
 import shutil
 import sqlite3
 import time
+import random
 from ecdsa import SigningKey, SECP256k1
-from initialize import BlockchainNode
+from blockchain_core import BlockchainNode
 
 NODES_DIR = "nodes"
-# Removed KEYS_SOURCE as we are generating keys fresh
 FILES_TO_INSTALL = [
-    "initialize.py",
+    "blockchain_core.py",
     "p2p.py",
     "add_transaction.py",
     "view_blockchain.py",
@@ -35,7 +35,7 @@ def setup_environment():
         ("Corner_Store", 5, "Retailer"),
     ]
 
-    print(f"--- INSTALLING DECENTRALIZED NODES IN '{NODES_DIR}/' ---")
+    print(f"--- INSTALLING DPoS NODES IN '{NODES_DIR}/' ---")
 
     goods_data = [
         ("G-LI", "Lithium Ore", "Tonnes"),
@@ -54,58 +54,58 @@ def setup_environment():
         ("SHIP-1003", "G-H2O", 50000.0, "CleanWater_Services", "Reservoir A"),
     ]
 
-    # Pre-calculate Public Keys (Generating FRESH keys for everyone)
     address_book = []
     print("Generating identities...")
     for name, rep, role in participants:
-        # Generate new key pair
         sk = SigningKey.generate(curve=SECP256k1)
         sk_hex = sk.to_string().hex()
         pk = sk.verifying_key.to_string().hex()
-
         address_book.append((name, pk, role, rep, sk_hex))
 
-    # Initialize Each Node
+    print("Conducting Genesis Election...")
+    genesis_votes = {name: 0 for name, _, _, _, _ in address_book}
+
+    for voter_name, _, _, _, _ in address_book:
+        candidates = [p[0] for p in address_book if p[0] != voter_name]
+        choice = random.choice(candidates)
+        genesis_votes[choice] += 1
+        print(f"   > {voter_name} cast genesis vote for {choice}")
+
     for name, pk, role, rep, sk_hex in address_book:
         node_path = os.path.join(NODES_DIR, name)
         os.makedirs(node_path)
 
-        # 1. Install Software
         for filename in FILES_TO_INSTALL:
             if os.path.exists(filename):
                 shutil.copy(filename, os.path.join(node_path, filename))
             else:
-                print(f"Error: {filename} not found in root. Cannot copy.")
+                print(f"Error: {filename} not found.")
 
-        # 2. Install Private Key
         with open(os.path.join(node_path, "private_key.pem"), "w") as f:
             f.write(sk_hex)
 
-        # 3. Initialize Local DB
         db_path = os.path.join(node_path, "blockchain.db")
-        BlockchainNode(name, db_path)
+        BlockchainNode(name, db_path)  # creates DB with is_active
 
         conn = sqlite3.connect(db_path)
         c = conn.cursor()
 
-        # Populate Address Book
         for p_name, p_pk, p_role, p_rep, _ in address_book:
+            vote_count = genesis_votes[p_name]
             c.execute(
-                "INSERT OR IGNORE INTO participants VALUES (?,?,?,?)",
-                (p_name, p_pk, p_role, p_rep),
+                "INSERT OR IGNORE INTO participants (name, public_key, role, reputation, votes) VALUES (?,?,?,?,?)",
+                (p_name, p_pk, p_role, p_rep, vote_count),
             )
 
-        # Populate Goods
         for g in goods_data:
             c.execute("INSERT OR IGNORE INTO goods VALUES (?,?,?)", g)
 
-        # Genesis Shipments
         for sh in genesis_shipments:
             sh_id, g_id, qty, owner, loc = sh
-            # Find owner's PK from our generated address book
             owner_pk = next(p[1] for p in address_book if p[0] == owner)
+            # Default is_active=1
             c.execute(
-                "INSERT OR IGNORE INTO shipments VALUES (?,?,?,?,?,?,?)",
+                "INSERT OR IGNORE INTO shipments (shipment_id, good_id, quantity, current_owner_pk, current_location, last_action, last_updated_timestamp, is_active) VALUES (?,?,?,?,?,?,?,1)",
                 (sh_id, g_id, qty, owner_pk, loc, "EXTRACTED", time.time()),
             )
 
@@ -113,7 +113,7 @@ def setup_environment():
         conn.close()
         print(f"   > Node '{name}' installed.")
 
-    print("\nNetwork Setup Complete. Each node is isolated.")
+    print("\nNetwork Setup Complete.")
 
 
 if __name__ == "__main__":

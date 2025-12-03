@@ -189,7 +189,6 @@ with tab1:
 
         elif action == "Manufacturar":
             container.subheader("🏭 Procesamiento / Manufactura")
-            container.info("Nota: Esta es una versión simplificada para la demo.")
             
             prod_name = container.text_input("Producto Resultante", "Batería de Litio")
             qty_prod = container.number_input("Cantidad Producida", 10.0)

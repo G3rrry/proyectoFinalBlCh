@@ -20,6 +20,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+
 st.markdown("""
     <style>
     .stDeployButton {display:none;}
@@ -27,7 +28,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-#CONFIGURACIÓN DE RED
+#CONFIGURACION DE RED
 PEERS = {
     "Flota_Camiones_Alfa": 5001,
     "Fabrica_Tech_Inc": 5002,
@@ -75,7 +76,7 @@ def send_transaction(node_name, tx_obj, private_key_hex):
         return 500, {"message": str(e)}
 
 
-
+#BARRA LATERAL
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/2091/2091665.png", width=60) 
     st.title("Panel de Nodo")
@@ -131,12 +132,13 @@ with tab1:
             conn = get_db_connection(selected_node)
             try:
                 goods = pd.read_sql("SELECT * FROM goods", conn)
+                conn.close()
                 good_sel = container.selectbox("Recurso", goods["name"] + " (" + goods["unit_of_measure"] + ")")
                 good_id = goods[goods["name"] == good_sel.split(" (")[0]]["good_id"].values[0]
             except:
                 container.error("No se pudo leer la tabla de bienes.")
                 good_id = None
-            conn.close()
+
             
             c1, c2 = container.columns(2)
             qty = c1.number_input("Cantidad", min_value=1.0, value=100.0)
@@ -170,7 +172,7 @@ with tab1:
                 receivers = [p for p in PEERS.keys() if p != selected_node]
                 dest = container.selectbox("Destinatario", receivers)
                 
-                #Obtenemos la PK del destino
+
                 conn = get_db_connection(selected_node)
                 dest_pk = conn.execute("SELECT public_key FROM participants WHERE name=?", (dest,)).fetchone()[0]
                 conn.close()
@@ -187,30 +189,126 @@ with tab1:
                     else:
                         st.error(f"Error: {res}")
 
+        #MANUFACTURA 
         elif action == "Manufacturar":
-            container.subheader("🏭 Procesamiento / Manufactura")
+            container.subheader("🏭 Manufactura (Insumos -> Producto)")
             
-            prod_name = container.text_input("Producto Resultante", "Batería de Litio")
-            qty_prod = container.number_input("Cantidad Producida", 10.0)
-            
-            if container.button("Registrar Producción", use_container_width=True):
-                new_id = f"PROD-{random.randint(1000,9999)}"
+
+            if 'lista_insumos' not in st.session_state:
+                st.session_state.lista_insumos = []
+
+            c_in, c_out = container.columns(2)
+
+            with c_in:
+                st.markdown("**1. Agregar Insumos**")
+                conn = get_db_connection(selected_node)
                 
-                tx = Transaction(pub_key, pub_key, new_id, ActionType.MANUFACTURED, "Fábrica Central", "GENERICO", qty_prod)
-                code, res = send_transaction(selected_node, tx, priv_key)
-                if code == 201:
-                    st.success("Producción registrada exitosamente.")
+
+                query = f"""
+                    SELECT s.shipment_id, s.quantity, s.good_id, g.unit_of_measure 
+                    FROM shipments s
+                    JOIN goods g ON s.good_id = g.good_id
+                    WHERE s.current_owner_pk='{pub_key}' AND s.is_active=1
+                """
+                inv = pd.read_sql(query, conn)
+                conn.close()
+                
+                #Filtramos lo que ya esta en el carrito
+                ids_en_carrito = [x['id'] for x in st.session_state.lista_insumos]
+                inv_disponible = inv[~inv['shipment_id'].isin(ids_en_carrito)]
+                
+                if inv_disponible.empty:
+                    st.info("No hay más insumos.")
                 else:
-                    st.error(f"Error: {res}")
+                    opciones = inv_disponible.apply(lambda x: f"{x['shipment_id']} ({x['quantity']} {x['unit_of_measure']})", axis=1)
+                    seleccion_texto = st.selectbox("Material", opciones)
+                    
+                    id_seleccionado = seleccion_texto.split(" (")[0]
+                    datos_item = inv_disponible[inv_disponible['shipment_id'] == id_seleccionado].iloc[0]
+                    
+                    cantidad_usar = st.number_input("Cantidad", min_value=0.1, max_value=float(datos_item['quantity']), step=1.0)
+                    
+                    if st.button("➕ Agregar"):
+                        st.session_state.lista_insumos.append({
+                            "id": datos_item['shipment_id'],
+                            "total": float(datos_item['quantity']),
+                            "used": cantidad_usar,
+                            "good_id": datos_item['good_id']
+                        })
+                        st.rerun()
+
+            with c_out:
+                st.markdown("**2. Lista de Mezcla**")
+                if st.session_state.lista_insumos:
+                    df_mezcla = pd.DataFrame(st.session_state.lista_insumos)
+                    st.dataframe(df_mezcla[["id", "used"]], hide_index=True, use_container_width=True)
+                    if st.button("🗑️ Limpiar"):
+                        st.session_state.lista_insumos = []
+                        st.rerun()
+                else:
+                    st.caption("Carrito vacío.")
+
+            container.divider()
+            st.markdown("**3. Producto Final**")
+            
+            conn = get_db_connection(selected_node)
+            goods = pd.read_sql("SELECT * FROM goods", conn)
+            conn.close()
+            
+            prod_sel = container.selectbox("Producto a Fabricar", goods["name"])
+            good_id_out = goods[goods["name"] == prod_sel]["good_id"].values[0]
+            qty_prod = container.number_input("Cantidad Producida", 10.0)
+            loc_prod = container.text_input("Ubicación Fábrica", "Línea de Ensamblaje")
+
+            if container.button("🚀 PROCESAR MANUFACTURA", use_container_width=True):
+                if not st.session_state.lista_insumos:
+                    st.error("Agrega insumos primero.")
+                else:
+                    lista_txs = []
+                    ids_origen = []
+                    
+                    for item in st.session_state.lista_insumos:
+                        ids_origen.append(item["id"])
+                        restante = item["total"] - item["used"]
+                        
+                        if restante <= 0:
+                            lista_txs.append(Transaction(
+                                pub_key, pub_key, item["id"], ActionType.CONSUMED,
+                                "Consumido en GUI", metadata={"product": prod_sel}
+                            ))
+                        else:
+                            lista_txs.append(Transaction(
+                                pub_key, pub_key, item["id"], ActionType.RECEIVED,
+                                loc_prod, item["good_id"], restante
+                            ))
+                    
+                    new_id = f"PROD-{random.randint(1000,9999)}"
+                    lista_txs.append(Transaction(
+                        pub_key, pub_key, new_id, ActionType.MANUFACTURED,
+                        loc_prod, good_id_out, qty_prod,
+                        metadata={"source_materials": ids_origen}
+                    ))
+                    
+                    exito = True
+                    for tx in lista_txs:
+                        c, r = send_transaction(selected_node, tx, priv_key)
+                        if c != 201:
+                            st.error(f"Fallo en {tx.shipment_id}: {r}")
+                            exito = False
+                            break
+                    
+                    if exito:
+                        st.balloons()
+                        st.success("¡Manufactura Exitosa!")
+                        st.session_state.lista_insumos = []
+                        time.sleep(2)
+                        st.rerun()
 
         elif action == "Votar":
-            container.subheader("🗳️ Consenso DPoS")
-            container.write("Elige al nodo validador de confianza.")
+            container.subheader("🗳️ Votación DPoS")
+            vote_for = container.selectbox("Candidato", list(PEERS.keys()))
             
-            candidates = [p for p in PEERS.keys()]
-            vote_for = container.selectbox("Candidato", candidates)
-            
-            #Buscamos la PK del candidato
+
             conn = get_db_connection(selected_node)
             cand_pk = conn.execute("SELECT public_key FROM participants WHERE name=?", (vote_for,)).fetchone()[0]
             conn.close()
@@ -219,96 +317,88 @@ with tab1:
                 tx = Transaction(pub_key, cand_pk, f"VOTE-{int(time.time())}", ActionType.VOTE, "Urna Virtual")
                 code, res = send_transaction(selected_node, tx, priv_key)
                 if code == 201:
-                    st.balloons() 
+
                     st.success("Voto registrado.")
                 else:
                     st.error(f"Error: {res}")
 
-#PESTAÑA 2: EXPLORADOR 
+#PESTAÑA 2: EXPLORADOR
 with tab2:
     col_head, col_btn = st.columns([4, 1])
-    col_head.write("#### Libro Mayor Inmutable (Ledger)")
+    col_head.write("#### Libro Mayor")
     if col_btn.button("🔄 Refrescar"):
         st.rerun()
 
     try:
-        #Intentamos conectar al nodo
+
         port = PEERS[selected_node]
         chain_res = requests.get(f"http://localhost:{port}/chain", timeout=1)
         
         if chain_res.status_code == 200:
             chain_data = chain_res.json()
+            st.metric("Altura de la Cadena", len(chain_data))
             
-            st.metric("Altura de la Cadena (Bloques)", len(chain_data))
-            
-            #Mostramos los bloques del más nuevo al más viejo
             for block in reversed(chain_data):
-
-                icon = "⛓️" if block['index'] > 0 else "🥚"
-                
-                with st.expander(f"{icon} Bloque #{block['index']} | Validador: {block['validator'][:15]}..."):
+                icon = "⛓️" if block['index'] > 1 else "🥚"
+                with st.expander(f"{icon} Bloque #{block['index']} | Validador: {block['validator'][:10]}..."):
                     c1, c2 = st.columns(2)
                     c1.markdown(f"**Hash:** `{block['hash']}`")
-                    c1.markdown(f"**Prev Hash:** `{block['previous_hash']}`")
-                    c2.markdown(f"**Merkle Root:** `{block['merkle_root'][:20]}...`")
-                    c2.markdown(f"**Timestamp:** {time.ctime(block['timestamp'])}")
+                    c1.markdown(f"**Prev:** `{block['previous_hash']}`")
+                    c2.markdown(f"**Merkle:** `{block['merkle_root'][:20]}...`")
+                    c2.markdown(f"**Time:** {time.ctime(block['timestamp'])}")
                     
                     st.markdown("##### Transacciones")
-                    if not block['transactions']:
-                        st.caption("Bloque vacío (Heartbeat)")
-                    else:
+                    if block['transactions']:
                         df_tx = pd.DataFrame(block['transactions'])
-
                         cols_to_show = ["action", "shipment_id", "sender", "receiver", "quantity"]
                         cols_final = [c for c in cols_to_show if c in df_tx.columns]
                         st.dataframe(df_tx[cols_final], use_container_width=True)
+                    else:
+                        st.caption("Bloque vacío")
         else:
-            st.warning("El nodo respondió pero con error.")
+            st.warning("El nodo no responde.")
             
     except Exception as e:
-        st.error(f"❌ No hay conexión con el nodo {selected_node}.")
-        st.info("Tip: Abre la terminal y ejecuta 'python start_network.py'")
+        st.error(f"❌ Error de conexión con el nodo.")
 
-#PESTAÑA 3: ESTADO DEL MUNDO
+#PESTAÑA 3: ESTADO DE LA RED
 with tab3:
-    st.write("#### Estado Global de la Red")
+    st.write("#### Estado Global")
     
-    #Conexion para sacar datos
+    
     conn = get_db_connection(selected_node)
-    
-    #Queries
     inventory_df = pd.read_sql("SELECT * FROM shipments WHERE is_active=1", conn)
     votes_df = pd.read_sql("SELECT name, votes, role FROM participants ORDER BY votes DESC", conn)
     
-    #Mapeo de PK a Nombres para que se entienda
+
     parts = conn.execute("SELECT public_key, name FROM participants").fetchall()
     participant_map = {pk: name for pk, name in parts}
     conn.close()
     
-
     m1, m2, m3 = st.columns(3)
     m1.metric("Envíos Activos", len(inventory_df))
-    m2.metric("Nodos Participantes", len(parts))
-    m3.metric("Líder Actual (Más Votos)", votes_df.iloc[0]['name'] if not votes_df.empty else "N/A")
+    m2.metric("Participantes", len(parts))
+    m3.metric("Líder DPoS", votes_df.iloc[0]['name'] if not votes_df.empty else "N/A")
     
     st.divider()
 
-    col_inv, col_votes = st.columns([2, 1])
+    c1, c2 = st.columns([2, 1])
     
-    with col_inv:
+    with c1:
         st.subheader("📦 Inventario Mundial")
         if not inventory_df.empty:
-            #Reemplazamos las llaves raras por nombres
             inventory_df["Dueño"] = inventory_df["current_owner_pk"].map(participant_map)
-            
-            #Tabla limpia
             st.dataframe(
                 inventory_df[["shipment_id", "quantity", "Dueño", "current_location"]],
                 use_container_width=True,
                 hide_index=True
             )
         else:
-            st.info("La cadena está vacía. ¡Crea el primer recurso!")
+            st.info("La cadena está vacía.")
 
-    with col_votes:
-        st.subheader("📊 Tabla de Votos")
+    with c2:
+        st.subheader("📊 Votos")
+        def highlight_top3(row):
+            return ['background-color: #d1e7dd']*len(row) if row.name < 3 else ['']*len(row)
+            
+        st.dataframe(votes_df[["name", "votes"]].style.apply(highlight_top3, axis=1), use_container_width=True)

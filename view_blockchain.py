@@ -3,91 +3,99 @@ import time
 import os
 import sys
 
+#Agregamos el directorio actual para importar las clases del nucleo
 sys.path.append(os.getcwd())
 from blockchain_core import BlockchainNode
 
 
 def view_local_ledger():
+    #Esta funcion lee la base de datos local y muestra el estado completo de la blockchain
     current_dir = os.getcwd()
     node_name = os.path.basename(current_dir)
     db_file = "blockchain.db"
 
     if not os.path.exists(db_file):
-        print(f"Error: No blockchain database found in {current_dir}")
+        print(f"Error: No se encontro la base de datos en {current_dir}")
         return
 
     node = BlockchainNode(node_name, db_file)
 
+
     print("\n" + "=" * 100)
-    print(f"[{node_name.upper()}] IMMUTABLE LEDGER (DPoS)")
+    print(f"[{node_name.upper()}] LIBRO MAYOR INMUTABLE (Consenso DPoS)")
     print("=" * 100)
 
+
+    #Cargamos toda la cadena de bloques
     chain = node.load_chain()
     if not chain:
-        print("(Empty Chain)")
+        print("(Cadena Vacia)")
     else:
         for block in chain:
-            print(f"\n[ BLOCK #{block.index} ]")
-            print(f"Timestamp     : {time.ctime(block.timestamp)}")
-            print(f"Validator     : {block.validator}")
-            print(f"Hash          : {block.hash}")
-            print(f"Previous Hash : {block.previous_hash}")
-            print(f"Merkle Root   : {block.merkle_root}")
-            print(f"Transactions  : {len(block.transactions)}")
+            print(f"\n[ BLOQUE #{block.index} ]")
+            print(f"Marca de Tiempo : {time.ctime(block.timestamp)}")
+            print(f"Validador       : {block.validator}")
+            print(f"Hash del Bloque : {block.hash}")
+            print(f"Hash Anterior   : {block.previous_hash}")
+            print(f"Raiz de Merkle  : {block.merkle_root}")
+            print(f"Transacciones   : {len(block.transactions)}")
             print("-" * 50)
 
             if not block.transactions:
-                print("   (No transactions)")
+                print("   (Sin transacciones)")
 
             for tx in block.transactions:
                 s = node.get_name_by_public_key(tx.sender)
 
                 if tx.action == "VOTE":
                     c = node.get_name_by_public_key(tx.receiver)
-                    print(f"   > [VOTE]      {s} voted for candidate {c}")
+                    print(f"   > [VOTO]        {s} voto por el candidato {c}")
 
                 elif tx.action == "DESTROYED":
-                    reason = tx.metadata.get("reason", "Unknown")
-                    print(f"   > [DESTROYED] {tx.shipment_id} removed by {s}")
-                    print(f"                 Reason: {reason}")
+                    reason = tx.metadata.get("reason", "Desconocida")
+                    print(f"   > [DESTRUIDO]   {tx.shipment_id} eliminado por {s}")
+                    print(f"                   Razon: {reason}")
 
                 elif tx.action == "CONSUMED":
-                    product = tx.metadata.get("product", "Goods")
-                    print(f"   > [CONSUMED]  {tx.shipment_id} used by {s}")
-                    print(f"                 Input for: {product}")
+                    product = tx.metadata.get("product", "Bienes")
+                    print(f"   > [CONSUMIDO]   {tx.shipment_id} usado por {s}")
+                    print(f"                   Insumo para: {product}")
 
                 elif tx.action in ["EXTRACTED", "MANUFACTURED"]:
-                    verb = "created" if tx.action == "EXTRACTED" else "manufactured"
-                    print(f"   > [CREATED]   {s} {verb} {tx.shipment_id}")
+                    verb = "extrajo" if tx.action == "EXTRACTED" else "manufacturo"
+                    print(f"   > [CREADO]      {s} {verb} {tx.shipment_id}")
                     print(
-                        f"                 {tx.quantity} {tx.good_id} at {tx.location}"
+                        f"                   {tx.quantity} {tx.good_id} en {tx.location}"
                     )
                     if (
                         tx.action == "MANUFACTURED"
                         and "source_materials" in tx.metadata
                     ):
                         print(
-                            f"                 Sources: {tx.metadata['source_materials']}"
+                            f"                   Fuentes: {tx.metadata['source_materials']}"
                         )
+
 
                 elif tx.action == "SHIPPED":
                     r = node.get_name_by_public_key(tx.receiver)
-                    print(f"   > [SHIPPED]   {tx.shipment_id} moved from {s} -> {r}")
-                    print(f"                 To: {tx.location}")
+                    print(f"   > [ENVIADO]     {tx.shipment_id} movido de {s} -> {r}")
+                    print(f"                   Hacia: {tx.location}")
 
                 elif tx.action == "RECEIVED":
-                    print(f"   > [RECEIVED]  {s} confirmed/updated {tx.shipment_id}")
-                    print(f"                 At: {tx.location}")
+                    print(f"   > [RECIBIDO]    {s} confirmo/actualizo {tx.shipment_id}")
+                    print(f"                   En: {tx.location}")
                     if tx.quantity:
-                        print(f"                 Updated Qty: {tx.quantity}")
+                        print(f"                   Cantidad Actualizada: {tx.quantity}")
 
-                print(f"                 [TxID: {tx.tx_hash[:16]}...]")
+                print(f"                   [TxID: {tx.tx_hash[:16]}...]")
 
             print("=" * 100)
 
-    print("\n" + "*" * 40 + " DELEGATE STANDINGS " + "*" * 40)
-    print(f"{'Candidate Name':<30} | {'Votes':<10} | {'Status'}")
+    #Seccion de Consenso DPoS
+    print("\n" + "*" * 40 + " TABLA DE POSICIONES (VOTOS) " + "*" * 40)
+    print(f"{'Candidato':<30} | {'Votos':<10} | {'Estado'}")
     print("-" * 60)
+
 
     conn = sqlite3.connect(node.db_file)
     delegates = conn.execute(
@@ -95,17 +103,18 @@ def view_local_ledger():
     ).fetchall()
 
     for i, (name, votes) in enumerate(delegates):
-        status = "ACTIVE WITNESS" if i < 3 else "Standby"
-        prefix = " --(Active)-- " if i < 3 else "  "
+        status = "VALIDADOR ACTIVO" if i < 3 else "En Espera"
+        prefix = " --(Activo)-- " if i < 3 else "  "
         print(f"{prefix}{name:<28} | {votes:<10} | {status}")
 
-    print("\n" + "#" * 40 + " WORLD STATE (Active Inventory) " + "#" * 40)
+    #Seccion de Trazabilidad (Estado del Mundo)
+    print("\n" + "#" * 40 + " ESTADO DEL MUNDO (Inventario Activo) " + "#" * 40)
     print(
-        f"{'Shipment ID':<18} | {'Good':<15} | {'Quantity':<12} | {'Owner':<20} | {'Location':<15} | {'Last Action'}"
+        f"{'ID Envio':<18} | {'Bien':<15} | {'Cant':<12} | {'Propietario':<20} | {'Ubicacion':<15} | {'Ultima Accion'}"
     )
     print("-" * 100)
 
-    # Filter by is_active = 1
+    #Filtramos solo lo que esta activo is_active = 1
     rows = conn.execute(
         """
         SELECT s.shipment_id, g.name, s.quantity, g.unit_of_measure, s.current_owner_pk, s.current_location, s.last_action
@@ -117,8 +126,9 @@ def view_local_ledger():
     ).fetchall()
     conn.close()
 
+
     if not rows:
-        print("(No active shipments in world state)")
+        print("(No hay envios activos en el estado del mundo)")
     else:
         for row in rows:
             sh, g_name, qty, unit, own_pk, loc, action = row

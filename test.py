@@ -6,52 +6,53 @@ import random
 from ecdsa import SigningKey, SECP256k1
 from blockchain_core import Transaction, ActionType
 
-# --- Network Configuration ---
+#Configuracion de la Red
 PEERS = {
-    "Truck_Fleet_Alpha": 5001,
-    "TechFoundry_Inc": 5002,
-    "Pacific_Logistics": 5003,
-    "OPEC_Supplier": 5004,
-    "Mega_Consumer_Goods": 5005,
-    "GlobalMining_Corp": 5006,
-    "FreightTrain_Express": 5007,
-    "Drone_Delivery_X": 5008,
-    "Corner_Store": 5009,
-    "CleanWater_Services": 5010,
-    "CargoShip_EverGiven": 5011,
+    "Flota_Camiones_Alfa": 5001,
+    "Fabrica_Tech_Inc": 5002,
+    "Logistica_Pacifico": 5003,
+    "Proveedor_Petroleo": 5004,
+    "Mega_Tienda_Consumo": 5005,
+    "Mina_Global_Corp": 5006,
+    "Tren_Carga_Express": 5007,
+    "Drones_Entrega_X": 5008,
+    "Tiendita_Esquina": 5009,
+    "Servicios_Agua_Limpia": 5010,
+    "Barco_Carga_EverGiven": 5011,
 }
 
 
+
 def get_keys(node_name):
-    """Loads private key from disk and derives public key."""
+    #Carga la clave privada del disco para poder firmar las pruebas
     key_path = os.path.join("nodes", node_name, "private_key.pem")
     if not os.path.exists(key_path):
-        raise FileNotFoundError(f"Key for {node_name} not found.")
+        raise FileNotFoundError(f"No se encontro la clave para {node_name}")
 
     with open(key_path, "r") as f:
         priv_hex = f.read().strip()
-
     sk = SigningKey.from_string(bytes.fromhex(priv_hex), curve=SECP256k1)
     vk = sk.verifying_key
     return priv_hex, vk.to_string().hex()
 
 
 def execute_step(step_num, sender_name, tx_data, title, narrative):
+    #Ejecuta un paso de la simulacion imprimiendo la historia en consola
     print(f"\n{'=' * 80}")
-    print(f"STEP {step_num}/10: {title.upper()}")
+    print(f"PASO {step_num}/10: {title.upper()}")
     print(f"{'-' * 80}")
-    print(f"STORY: {narrative}")
+    print(f"HISTORIA: {narrative}")
 
-    # 1. Prepare Credentials
+    #1. Preparamos las credenciales del emisor
     port = PEERS[sender_name]
     priv_key, pub_key = get_keys(sender_name)
 
-    # 2. Identify Receiver Public Key (if applicable)
-    receiver_pub = pub_key  # Default to self (for Extract/Manufacture/Receive)
+    #2. Identificamos la clave publica del receptor
+    receiver_pub = pub_key 
     if "receiver_name" in tx_data:
         _, receiver_pub = get_keys(tx_data.pop("receiver_name"))
 
-    # 3. Create Transaction Object
+    #3. Creamos el objeto Transaccion
     tx = Transaction(
         sender_public_key=pub_key,
         receiver_public_key=receiver_pub,
@@ -63,199 +64,204 @@ def execute_step(step_num, sender_name, tx_data, title, narrative):
         metadata=tx_data.get("metadata"),
     )
 
-    # 4. Sign
+    #4. Firmamos la transaccion (Firma Digital)
     tx.sign_transaction(priv_key)
 
-    # 5. Broadcast via HTTP
+    #5. Transmitimos via HTTP
     payload = tx.to_dict()
     payload["signature"] = tx.signature
 
-    print(f"\nACTION: Sending Transaction to Node '{sender_name}' (Port {port})...")
+
+    print(f"\nACCION: Enviando Transaccion al Nodo '{sender_name}' (Puerto {port})...")
     try:
         url = f"http://localhost:{port}/transaction"
         resp = requests.post(url, json=payload, timeout=2)
         if resp.status_code == 201:
-            print(f"SUCCESS: Transaction Accepted by Network.")
-            print(f"Tx Hash: {tx.tx_hash[:16]}...")
+            print(f"EXITO: La red acepto la transaccion.")
+            print(f"Hash Tx: {tx.tx_hash[:16]}...")
             print(f"Payload: {tx.action} -> {tx.shipment_id}")
         else:
-            print(f"FAILURE: Node Rejected Tx: {resp.text}")
+            print(f"FALLO: El nodo rechazo la Tx: {resp.text}")
             return
     except Exception as e:
-        print(f"ERROR: Connection Failed: {e}")
+        print(f"ERROR: Fallo la conexion: {e}")
         return
 
-    # 6. Wait for Auto-Mining
-    print("\nCONSENSUS: Waiting 6 seconds for block mining and propagation...")
+
+    #6. Esperamos a que la red valide (Consenso)
+    print("\nCONSENSO: Esperando 6 segundos para minado y propagacion...")
     for i in range(6, 0, -1):
         print(f"   {i}...", end="\r")
         time.sleep(1)
-    print("   Done! Block should be mined.\n")
+    print("   Listo! El bloque deberia estar minado.\n")
 
 
 def main():
     print("\n" + "#" * 80)
-    print("GLOBAL SUPPLY CHAIN SIMULATION: FROM MINE TO MARKET")
+    print("SIMULACION DE CADENA DE SUMINISTRO: DE LA MINA AL MERCADO")
     print("#" * 80)
 
-    # Identifiers
-    raw_material_id = f"SHIP-LITH-{random.randint(1000, 9999)}"
-    finished_good_id = f"SHIP-BATT-{random.randint(1000, 9999)}"
 
-    # --- 1. EXTRACT ---
+    #Generamos IDs aleatorios para los lotes de prueba
+    raw_material_id = f"SHIP-LITIO-{random.randint(1000, 9999)}"
+    finished_good_id = f"SHIP-BATERIA-{random.randint(1000, 9999)}"
+
+    #1. EXTRACCION
     execute_step(
         1,
-        "GlobalMining_Corp",
+        "Mina_Global_Corp",
         {
             "shipment_id": raw_material_id,
             "action": ActionType.EXTRACTED,
-            "location": "Nevada Lithium Basin",
+            "location": "Cuenca de Litio Nevada",
             "good_id": "G-LI",
             "quantity": 500.0,
         },
-        "Extraction of Raw Materials",
-        "GlobalMining Corp initiates operations in Nevada, extracting 500 Tonnes of raw Lithium ore.",
+        "Extraccion de Materia Prima",
+        "Mina Global inicia operaciones extrayendo 500 Toneladas de mineral de Litio crudo.",
     )
 
-    # --- 2. SHIP TO MANUFACTURER ---
+    #2. ENVIO A MANUFACTURA
     execute_step(
         2,
-        "GlobalMining_Corp",
+        "Mina_Global_Corp",
         {
             "shipment_id": raw_material_id,
             "action": ActionType.SHIPPED,
-            "location": "In Transit (Rail Network B)",
-            "receiver_name": "TechFoundry_Inc",
+            "location": "En Transito (Red Ferroviaria B)",
+            "receiver_name": "Fabrica_Tech_Inc",
         },
-        "Shipment to Factory",
-        "The raw ore is loaded onto freight trains bound for TechFoundry's specialized processing plant.",
+        "Envio a la Fabrica",
+        "El mineral crudo se carga en trenes con destino a la planta de procesamiento de Fabrica Tech.",
     )
 
-    # --- 3. RECEIVE AT FACTORY ---
+    #3. RECEPCION EN FABRICA
     execute_step(
         3,
-        "TechFoundry_Inc",
+        "Fabrica_Tech_Inc",
         {
             "shipment_id": raw_material_id,
             "action": ActionType.RECEIVED,
-            "location": "Silicon Valley Processing Hub",
+            "location": "Centro de Procesamiento Silicon Valley",
         },
-        "Factory Intake",
-        "TechFoundry verifies the shipment upon arrival at their loading dock, signing for custody on the blockchain.",
+        "Ingreso en Fabrica",
+        "Fabrica Tech verifica el envio al llegar a su anden firmando la custodia en la blockchain.",
     )
 
-    # --- 4. CONSUME INPUT ---
+
+    #4. CONSUMO DE INSUMOS
     execute_step(
         4,
-        "TechFoundry_Inc",
+        "Fabrica_Tech_Inc",
         {
             "shipment_id": raw_material_id,
             "action": ActionType.CONSUMED,
-            "location": "Smelting Sector 4",
-            "metadata": {"process": "Purification", "waste_ratio": "0.05"},
+            "location": "Sector de Fundicion 4",
+            "metadata": {"proceso": "Purificacion", "ratio_desperdicio": "0.05"},
         },
-        "Processing Raw Materials",
-        "The Lithium Ore is fed into the smelting furnace. It is 'Consumed' from inventory to create the final product.",
+        "Procesamiento de Materia Prima",
+        "El mineral de Litio entra al horno de fundicion. Se marca como Consumido del inventario para crear el producto.",
     )
 
-    # --- 5. MANUFACTURE OUTPUT ---
+    #5. MANUFACTURA DE PRODUCTO FINAL
     execute_step(
         5,
-        "TechFoundry_Inc",
+        "Fabrica_Tech_Inc",
         {
             "shipment_id": finished_good_id,
             "action": ActionType.MANUFACTURED,
-            "location": "Assembly Line A",
-            "good_id": "G-CHIP",  # Proxy for High Tech Good
+            "location": "Linea de Ensamblaje A",
+            "good_id": "G-CHIP", 
             "quantity": 2000.0,
-            "metadata": {"source_batch": raw_material_id, "quality_check": "PASS"},
+            "metadata": {"lote_origen": raw_material_id, "control_calidad": "APROBADO"},
         },
-        "Manufacturing Finished Goods",
-        "Refined Lithium is used to manufacture 2,000 High-Capacity Battery Cells (G-CHIP). A digital twin is created.",
+        "Manufactura de Bienes Terminados",
+        "El litio refinado se usa para fabricar 2000 Microchips. Se crea un gemelo digital del lote.",
     )
 
-    # --- 6. SHIP TO LOGISTICS ---
+
+    #6. ENVIO A LOGISTICA
     execute_step(
         6,
-        "TechFoundry_Inc",
+        "Fabrica_Tech_Inc",
         {
             "shipment_id": finished_good_id,
             "action": ActionType.SHIPPED,
-            "location": "Outbound Freight",
-            "receiver_name": "Pacific_Logistics",
+            "location": "Carga de Salida",
+            "receiver_name": "Logistica_Pacifico",
         },
-        "Handover to Logistics",
-        "The finished batteries are palletized and handed over to Pacific Logistics for international distribution.",
+        "Traspaso a Logistica",
+        "Los chips terminados se paletizan y se entregan a Logistica Pacifico para distribucion internacional.",
     )
 
-    # --- 7. RECEIVE AT PORT ---
+    #7. RECEPCION EN PUERTO
     execute_step(
         7,
-        "Pacific_Logistics",
+        "Logistica_Pacifico",
         {
             "shipment_id": finished_good_id,
             "action": ActionType.RECEIVED,
-            "location": "Port of Los Angeles",
-            "metadata": {"customs_status": "CLEARED"},
+            "location": "Puerto de Los Angeles",
+            "metadata": {"estado_aduanas": "LIBERADO"},
         },
-        "Logistics Hub Check-in",
-        "Pacific Logistics scans the crates at the Port of LA. Customs clearance is recorded in the metadata.",
+        "Chequeo en Hub Logistico",
+        "Logistica Pacifico escanea las cajas en el puerto. La liberacion de aduana queda registrada en los metadatos.",
     )
 
-    # --- 8. TRANSFER TO LAST MILE ---
+    #8. TRANSFERENCIA A ULTIMA MILLA
     execute_step(
         8,
-        "Pacific_Logistics",
+        "Logistica_Pacifico",
         {
             "shipment_id": finished_good_id,
             "action": ActionType.SHIPPED,
-            "location": "Loading Bay 12",
-            "receiver_name": "Truck_Fleet_Alpha",
+            "location": "Bahia de Carga 12",
+            "receiver_name": "Flota_Camiones_Alfa",
         },
-        "Transfer to Truck Fleet",
-        "Cargo is moved from the warehouse to Truck Fleet Alpha for last-mile delivery to the retailer.",
+        "Transferencia a Camiones",
+        "La carga se mueve del almacen a la Flota de Camiones Alfa para la entrega final al minorista.",
     )
 
-    # --- 9. TRUCK TRANSIT ---
+
+    #9. TRANSITO TERRESTRE
     execute_step(
         9,
-        "Truck_Fleet_Alpha",
+        "Flota_Camiones_Alfa",
         {
             "shipment_id": finished_good_id,
             "action": ActionType.RECEIVED,
-            "location": "Interstate 405 South",
-            "metadata": {"driver": "ID-442", "temp_c": "22.5"},
+            "location": "Autopista 405 Sur",
+            "metadata": {"chofer": "ID-442", "temp_c": "22.5"},
         },
-        "Transit Confirmation",
-        "Truck Fleet Alpha confirms pickup. IoT sensors record the temperature during transit.",
+        "Confirmacion de Transito",
+        "La Flota confirma la recoleccion. Sensores IoT registran la temperatura durante el viaje.",
     )
 
-    # --- 10. FINAL DELIVERY ---
+    #10. ENTREGA FINAL
     execute_step(
         10,
-        "Truck_Fleet_Alpha",
+        "Flota_Camiones_Alfa",
         {
             "shipment_id": finished_good_id,
             "action": ActionType.SHIPPED,
-            "location": "Retail Loading Dock",
-            "receiver_name": "Mega_Consumer_Goods",
+            "location": "Anden de Tienda",
+            "receiver_name": "Mega_Tienda_Consumo",
         },
-        "Final Delivery to Retailer",
-        "The truck arrives at Mega Consumer Goods. Ownership is transferred to the retailer, completing the cycle.",
+        "Entrega Final al Minorista",
+        "El camion llega a la Mega Tienda. La propiedad se transfiere al minorista completando el ciclo.",
     )
 
     print("\n" + "=" * 80)
-    print("SIMULATION COMPLETE")
+    print("SIMULACION COMPLETADA")
     print("=" * 80)
-    print("To verify the Ledger state, you can run:")
+    print("Para verificar el Libro Mayor puedes correr:")
     print("  python view_blockchain.py")
-    print("  from inside any node.")
-    print("\nYou should see:")
-    print(f"  1. A 'CONSUMED' transaction for {raw_material_id}")
-    print(f"  2. A 'MANUFACTURED' transaction for {finished_good_id}")
-    print(f"  3. Multiple 'SHIPPED/RECEIVED' events tracking the path.")
+    print("  desde la carpeta de cualquier nodo.")
+    print("\nDeberias ver:")
+    print(f"  1. Una transaccion CONSUMED para {raw_material_id}")
+    print(f"  2. Una transaccion MANUFACTURED para {finished_good_id}")
+    print(f"  3. Multiples eventos SHIPPED/RECEIVED rastreando la ruta.")
     print("=" * 80 + "\n")
-
 
 if __name__ == "__main__":
     main()

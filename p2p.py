@@ -8,15 +8,18 @@ import time
 from flask import Flask, jsonify, request
 from blockchain_core import BlockchainNode, Block, Transaction, ActionType
 
-# --- Configuration ---
+#Configuracion Inicial
 app = Flask(__name__)
-NODE_NAME = os.path.basename(os.getcwd())  # Use folder name as Identity
+#Usamos el nombre de la carpeta como la Identidad del nodo (ej. Node_1)
+NODE_NAME = os.path.basename(os.getcwd())
 DB_PATH = "blockchain.db"
 
-# Initialize Node
+#Inicializamos el Nodo Blockchain con la base de datos local
 node = BlockchainNode(NODE_NAME, DB_PATH)
 
-# Known peers - COMPLETE LIST
+
+#Lista de compañeros conocidos en la red (Peer-to-Peer)
+#Aqui definimos a quien le vamos a chismear (Gossip) la informacion
 PEERS = {
     "Truck_Fleet_Alpha": "http://localhost:5001",
     "TechFoundry_Inc": "http://localhost:5002",
@@ -31,22 +34,22 @@ PEERS = {
     "CargoShip_EverGiven": "http://localhost:5011",
 }
 
-# Determine My Port
-MY_PORT = 5000  # Default fallback
+#Determinamos en que puerto debe correr este nodo especifico
+MY_PORT = 5000 #Puerto por defecto si no lo encontramos en la lista
 if NODE_NAME in PEERS:
     MY_PORT = int(PEERS[NODE_NAME].split(":")[-1])
 
 
-# --- Auto-Miner Thread ---
+#Hilo de Minado Automatico (Validacion)
 def auto_mine_loop():
-    """Checks periodically if this node is the validator and mines if needed."""
-    print(f"[*] Auto-Miner started for {NODE_NAME}")
+    #Esta funcion corre en segundo plano y revisa si es nuestro turno de crear un bloque
+    print(f"[*] Iniciando Validacion Automatica para {NODE_NAME}")
 
     while True:
-        time.sleep(5)  # Wait 5 seconds between checks (Block Time)
+        time.sleep(5) #Esperamos 5 segundos entre cada chequeo (Tiempo de Bloque)
 
         try:
-            # 1. Get Current Network State
+            #1. Revisamos el estado actual de la red
             last_block = node.get_last_block()
             if not last_block:
                 continue
@@ -54,16 +57,17 @@ def auto_mine_loop():
             prev_hash = last_block.hash
             height = last_block.index
 
-            # 2. Am I the Validator?
+            #2. Preguntamos al Consenso: Soy yo el validador de este turno?
+            #RUBRICA: Metodo de Consenso (Proof of Authority / DPoS)
             expected_validator = node.select_validator(prev_hash)
 
             if expected_validator == NODE_NAME:
-                # 3. Check Mempool
+                #3. Si es mi turno reviso si hay transacciones pendientes en la mempool
                 mempool = node.get_mempool_transactions()
                 if mempool:
-                    print(f"\n   [⛏] It is my turn! Mining {len(mempool)} txs...")
+                    print(f"\n   [ ] Es mi turno! Validando {len(mempool)} transacciones...")
 
-                    # 4. Filter Valid Transactions
+                    #4. Filtramos solo las transacciones validas
                     valid_txs = []
                     for tx in mempool:
                         is_valid_logic, _ = node.validate_smart_contract_rules(tx)
@@ -71,29 +75,28 @@ def auto_mine_loop():
                             valid_txs.append(tx)
 
                     if valid_txs:
-                        # 5. Mine Block
+                        #5. Creamos el nuevo bloque
                         new_index = height + 1
                         new_block = Block(new_index, valid_txs, prev_hash, NODE_NAME)
 
-                        # 6. Save Locally
+                        #6. Lo guardamos en nuestra propia base de datos
                         success, msg = node.receive_block(new_block)
                         if success:
                             print(
-                                f"   [+] Mined Block #{new_index} ({new_block.hash[:8]}). Broadcasting..."
+                                f"   [+] Bloque #{new_index} Creado ({new_block.hash[:8]}). Propagando..."
                             )
-                            # 7. Broadcast to Peers
+                            #7. IMPORTANTE: Lo enviamos a todos los demas nodos (Gossip)
                             broadcast_block(new_block)
                         else:
-                            print(f"   [!] Self-validation failed: {msg}")
+                            print(f"   [!] Error de auto-validacion: {msg}")
         except Exception as e:
-            print(f"   [!] Miner Error: {e}")
+            print(f"   [!] Error en el proceso de validacion: {e}")
 
 
-# --- API Endpoints ---
-
-
+#API Endpoints (Interfaces para que otros nodos nos hablen)
 @app.route("/info", methods=["GET"])
 def get_info():
+    #Devuelve informacion basica del estado de este nodo
     last_block = node.get_last_block()
     return jsonify(
         {
@@ -106,6 +109,7 @@ def get_info():
 
 @app.route("/chain", methods=["GET"])
 def get_chain():
+    #Permite a otros nodos descargar nuestra copia de la blockchain para sincronizarse
     chain_data = []
     last = node.get_last_block()
     height = last.index if last else 0
@@ -113,11 +117,15 @@ def get_chain():
         blk = node.get_block_by_index(i)
         if blk:
             chain_data.append(json.loads(blk.to_json()))
+        # 
+
+
     return jsonify(chain_data)
 
 
 @app.route("/transaction", methods=["POST"])
 def receive_transaction():
+    #Recibimos una transaccion nueva de otro nodo o de una wallet
     data = request.get_json()
     try:
         tx = Transaction(
@@ -133,55 +141,59 @@ def receive_transaction():
             data.get("signature"),
         )
 
-        # Try to add to local mempool
+        #Intentamos agregarla a nuestra mempool local
         success, msg = node.add_to_mempool(tx)
 
         if success:
-            print(f"[*] Received Tx {tx.tx_hash[:8]} (New) - Relaying to network...")
-            # GOSSIP: Relay to others
+            print(f"[*] Tx Recibida {tx.tx_hash[:8]} (Nueva) - Reenviando a la red...")
+            #RUBRICA: Metodo de Distribucion (Gossip Protocol)
+            #Si la transaccion es valida y nueva se la pasamos a nuestros vecinos
             threading.Thread(target=broadcast_transaction, args=(tx,)).start()
-            return jsonify({"message": "Transaction added and relayed"}), 201
+            return jsonify({"message": "Transaccion agregada y retransmitida"}), 201
 
-        elif msg == "Duplicate":
-            return jsonify({"message": "Transaction already known"}), 200
+        elif msg == "Duplicada":
+            #Si ya la teniamos no hacemos nada para evitar bucles infinitos
+            return jsonify({"message": "Transaccion ya conocida"}), 200
 
-        return jsonify({"message": f"Invalid Tx: {msg}"}), 400
+        return jsonify({"message": f"Tx Invalida: {msg}"}), 400
     except Exception as e:
         return jsonify({"message": str(e)}), 400
+
 
 
 @app.route("/block", methods=["POST"])
 def receive_block():
+    #Recibimos un bloque nuevo propuesto por el validador del turno
     data = request.get_json()
     try:
         block = Block.from_json(json.dumps(data))
-        print(f"[*] Received Block #{block.index} from {block.validator}")
+        print(f"[*] Bloque Recibido #{block.index} de {block.validator}")
 
-        # 1. Attempt to add to local chain
+        #1. Intentamos agregarlo a nuestra cadena local
         success, msg = node.receive_block(block)
 
         if success:
-            print(f"    [+] Block Accepted. New Height: {block.index}")
+            print(f"    [+] Bloque Aceptado. Nueva Altura: {block.index}")
 
-            # 2. GOSSIP: If it's valid and new, broadcast it!
+            #2. GOSSIP: Si el bloque es valido lo pasamos a los demas para que se propague rapido
             threading.Thread(target=broadcast_block, args=(block,)).start()
 
-            return jsonify({"message": "Block accepted"}), 201
+            return jsonify({"message": "Bloque aceptado"}), 201
         else:
-            print(f"    [-] Block Rejected: {msg}")
-            # If rejected because of a gap, trigger sync
-            if "Gap detected" in msg or "Invalid Index" in msg:
+            print(f"    [-] Bloque Rechazado: {msg}")
+            #Si lo rechazamos porque nos faltan bloques anteriores activamos la sincronizacion
+            if "Falta el bloque anterior" in msg or "Indice Invalido" in msg:
                 threading.Thread(target=synchronize_chain).start()
-            return jsonify({"message": f"Block rejected: {msg}"}), 409
+            return jsonify({"message": f"Bloque rechazado: {msg}"}), 409
     except Exception as e:
-        print(f"Error processing block: {e}")
+        print(f"Error procesando bloque: {e}")
         return jsonify({"message": str(e)}), 400
 
 
-# --- P2P Actions ---
-
+#Funciones P2P para hablar con otros nodos
 
 def broadcast_transaction(tx):
+    #Envia una transaccion a todos los peers conocidos
     tx_data = tx.to_dict()
     tx_data["signature"] = tx.signature
     for name, url in PEERS.items():
@@ -193,7 +205,9 @@ def broadcast_transaction(tx):
             pass
 
 
+
 def broadcast_block(block):
+    #Envia un bloque nuevo a todos los peers conocidos
     block_json = json.loads(block.to_json())
     for name, url in PEERS.items():
         if name == NODE_NAME:
@@ -201,15 +215,18 @@ def broadcast_block(block):
         try:
             requests.post(f"{url}/block", json=block_json, timeout=1)
         except Exception as e:
-            print(f"    [!] Failed to reach {name}")
+            print(f"    [!] Fallo al contactar a {name}")
+
 
 
 def synchronize_chain():
-    print("[*] Starting Synchronization...")
+    #RUBRICA: Metodo de Distribucion (Sincronizacion)
+    #Busca al nodo con la cadena mas larga y descarga los bloques faltantes
+    print("[*] Iniciando Sincronizacion...")
     best_height = 0
     best_peer = None
 
-    # 1. Find peer with longest chain
+    #1. Preguntamos a todos los vecinos cual es su altura
     for name, url in PEERS.items():
         if name == NODE_NAME:
             continue
@@ -222,44 +239,47 @@ def synchronize_chain():
                     best_peer = url
         except:
             pass
-
     my_height = node.get_last_block().index if node.get_last_block() else 0
 
+    #2. Si encontramos a alguien mas avanzado descargamos su cadena
     if best_height > my_height:
-        print(f"[*] Found longer chain ({best_height}) at {best_peer}. Downloading...")
+        print(f"[*] Cadena mas larga encontrada ({best_height}) en {best_peer}. Descargando...")
         try:
             resp = requests.get(f"{best_peer}/chain")
             if resp.status_code == 200:
                 chain_dump = resp.json()
                 for blk_data in chain_dump:
                     blk = Block.from_json(json.dumps(blk_data))
+                    #Solo procesamos los bloques que nos faltan
                     if blk.index > my_height:
                         success, msg = node.receive_block(blk)
                         if success:
-                            print(f"    Synced Block #{blk.index}")
+                            print(f"    Sincronizado Bloque #{blk.index}")
                         else:
-                            print(f"    Sync Error at #{blk.index}: {msg}")
+                            print(f"    Error de Sincronizacion en #{blk.index}: {msg}")
                             break
         except Exception as e:
-            print(f"Sync failed: {e}")
+            print(f"Fallo la sincronizacion: {e}")
     else:
-        print("[*] Chain is up to date.")
+        print("[*] La cadena esta actualizada.")
 
 
-# --- Bootstrapping ---
+#Arranque del Servidor
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, help="Port to run on")
+    parser.add_argument("--port", type=int, help="Puerto para correr el nodo")
     args = parser.parse_args()
+
 
     if args.port:
         MY_PORT = args.port
 
-    # Initial Sync
+
+    #Sincronizacion Inicial al prender el nodo
     threading.Thread(target=synchronize_chain).start()
 
-    # Start Auto-Miner Thread
+    #Iniciamos el hilo de validacion automatica
     threading.Thread(target=auto_mine_loop, daemon=True).start()
 
-    print(f"\n=== NODE {NODE_NAME} RUNNING ON PORT {MY_PORT} ===")
+    print(f"\n=== NODO {NODE_NAME} CORRIENDO EN PUERTO {MY_PORT} ===")
     app.run(host="0.0.0.0", port=MY_PORT)

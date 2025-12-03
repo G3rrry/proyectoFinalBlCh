@@ -2,97 +2,102 @@ import os
 import sys
 import requests
 import time
-import json  # <--- THIS WAS MISSING
+import json
 from blockchain_core import BlockchainNode, Block
 
-# Configuration
+#Configuracion basica
 NODE_NAME = os.path.basename(os.getcwd())
 
-# Map of Node Names to Ports (Must match p2p.py)
+#Mapa de nombres de nodos a puertos
 PEERS = {
-    "Truck_Fleet_Alpha": 5001,
-    "TechFoundry_Inc": 5002,
-    "Pacific_Logistics": 5003,
-    "OPEC_Supplier": 5004,
-    "Mega_Consumer_Goods": 5005,
-    "GlobalMining_Corp": 5006,
-    "FreightTrain_Express": 5007,
-    "Drone_Delivery_X": 5008,
-    "Corner_Store": 5009,
-    "CleanWater_Services": 5010,
-    "CargoShip_EverGiven": 5011,
+    "Flota_Camiones_Alfa": 5001,
+    "Fabrica_Tech_Inc": 5002,
+    "Logistica_Pacifico": 5003,
+    "Proveedor_Petroleo": 5004,
+    "Mega_Tienda_Consumo": 5005,
+    "Mina_Global_Corp": 5006,
+    "Tren_Carga_Express": 5007,
+    "Drones_Entrega_X": 5008,
+    "Tiendita_Esquina": 5009,
+    "Servicios_Agua_Limpia": 5010,
+    "Barco_Carga_EverGiven": 5011,
 }
 
 MY_PORT = PEERS.get(NODE_NAME, 5000)
 BASE_URL = f"http://localhost:{MY_PORT}"
 
 
-def main():
-    print(f"\n--- {NODE_NAME.upper()} VALIDATOR DASHBOARD ---")
 
-    # 1. Get Info from Local Node Server
+def main():
+    print(f"\n--- PANEL DE VALIDACION DE {NODE_NAME.upper()} ---")
+    #1.Obtener informacion del nodo servidor local
     try:
         resp = requests.get(f"{BASE_URL}/info", timeout=2)
         info = resp.json()
     except requests.exceptions.ConnectionError:
-        print(f"[!] Error: Node server is not running at {BASE_URL}")
-        print(f"    Please ensure 'p2p.py' is running for this node.")
+        print(f"[!] Error El servidor del nodo no esta corriendo en {BASE_URL}")
+        print(f"    Asegurate de que p2p.py este ejecutandose.")
         return
 
-    print(f"Current Height: {info['height']}")
+    print(f"Altura Actual: {info['height']}")
 
-    # 2. Check Logic (Read-Only DB Access)
+    #2.Verificar logica de consenso leyendo la base de datos
     node = BlockchainNode(NODE_NAME, "blockchain.db")
     last_block = node.get_last_block()
     prev_hash = last_block.hash if last_block else "0" * 64
 
-    # Check if it's our turn
+
+    #RUBRICA:Metodo de Consenso
+    #Verificamos si segun las reglas de votacion DPoS es nuestro turno de validar
     expected_validator = node.select_validator(prev_hash)
-    print(f"Expected Validator: {expected_validator}")
+    print(f"Validador Esperado: {expected_validator}")
 
     if expected_validator != NODE_NAME:
-        print("\n[!] You are NOT the current validator.")
-        print(f"    Waiting for {expected_validator}...")
+        print("\n[!] NO eres el validador actual.")
+        print(f"    Esperando a {expected_validator}...")
         return
 
-    print("\n[+] You ARE the elected validator!")
+    print("\n[+] ERES el validador electo!")
 
-    # 3. Mine
+    #3.Proceso de creacion de bloque o minado
     mempool = node.get_mempool_transactions()
     if not mempool:
-        print("    Mempool is empty. Nothing to mine.")
+        print("    La Mempool esta vacia no hay nada que minar.")
         return
 
-    print(f"    Found {len(mempool)} transactions.")
+    print(f"    Encontradas {len(mempool)} transacciones.")
     valid_txs = []
     for tx in mempool:
+        #RUBRICA:Aspectos Relevantes
+        #Validamos reglas de contrato inteligente y firma digital antes de incluir
         is_valid, msg = node.validate_smart_contract_rules(tx)
         if is_valid and tx.is_valid():
             valid_txs.append(tx)
         else:
-            print(f"    Skipping invalid tx: {tx.tx_hash[:8]} ({msg})")
+            print(f"    Saltando tx invalida: {tx.tx_hash[:8]} ({msg})")
 
     if not valid_txs:
-        print("    No valid transactions to package.")
+        print("    No hay transacciones validas para empaquetar.")
         return
 
     new_index = (last_block.index + 1) if last_block else 1
     new_block = Block(new_index, valid_txs, prev_hash, NODE_NAME)
 
-    print(f"\n[+] Minting Block #{new_index}...")
+    print(f"\n[+] Minando Bloque #{new_index}...")
 
-    # 4. Submit Block to Local Server
+
+    #4.Enviar el bloque nuevo al servidor para que lo propague
     try:
-        # This line failed before because json wasn't imported
         block_payload = json.loads(new_block.to_json())
 
         r = requests.post(f"{BASE_URL}/block", json=block_payload)
         if r.status_code == 201:
-            print(f"Success! Block #{new_index} mined and broadcasted.")
+            print(f"Exito Bloque #{new_index} minado y transmitido.")
         else:
-            print(f"Error submitting block: {r.text}")
+            print(f"Error enviando bloque: {r.text}")
     except Exception as e:
-        print(f"    Communication error: {e}")
+        print(f"    Error de comunicacion: {e}")
+
 
 
 if __name__ == "__main__":

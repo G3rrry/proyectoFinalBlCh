@@ -3,13 +3,17 @@ import random
 import sqlite3
 import sys
 import time
-import requests  # Added for HTTP P2P
+import requests
 
+
+#Agregamos el directorio actual para poder importar nuestros modulos
 sys.path.append(os.getcwd())
-# We removed 'import p2p' because we now communicate via HTTP
+
+#Importamos las clases necesarias que controlan la logica de la blockchain
 from blockchain_core import BlockchainNode, Transaction, ActionType
 
-# --- Configuration for Real Network ---
+
+#Lista de los nodos y sus puertos para saber a donde conectarnos
 PEERS = {
     "Truck_Fleet_Alpha": 5001,
     "TechFoundry_Inc": 5002,
@@ -26,31 +30,36 @@ PEERS = {
 
 
 def get_identity():
+    #Esta funcion lee el nombre de la carpeta y carga la clave privada del archivo
     current_dir = os.getcwd()
     node_name = os.path.basename(current_dir)
     key_path = "private_key.pem"
+    
     if not os.path.exists(key_path):
         return None, None
+        
     with open(key_path, "r") as f:
         private_key = f.read().strip()
     return node_name, private_key
 
 
 def get_node_port(node_name):
+    #Buscamos el puerto que le corresponde al nodo
     return PEERS.get(node_name, 5000)
 
-
 def select_from_menu(items, title, formatter):
+    #Funcion auxiliar para mostrar menus y que el usuario elija una opcion
     if not items:
-        print(f"\n--- {title} ---\n  (No items available)")
-        input("Press Enter to go back...")
+        print(f"\n {title} \n  (No hay elementos disponibles)")
+        input("Presiona Enter para volver...")
         return None
     while True:
-        print(f"\n--- {title} ---")
+        print(f"\n {title} ")
         for i, item in enumerate(items, 1):
             print(f"{i}. {formatter(item)}")
-        print("B. Back")
-        choice = input("\nSelect: ").strip().lower()
+        print("B. Volver")
+        
+        choice = input("\nSelecciona una opcion: ").strip().lower()
         if choice == "b":
             return None
         try:
@@ -58,67 +67,73 @@ def select_from_menu(items, title, formatter):
             if 0 <= idx < len(items):
                 return items[idx]
             else:
-                print("Invalid selection.")
+                print("Seleccion invalida.")
         except ValueError:
-            print("Please enter a number.")
+            print("Por favor ingresa un numero.")
 
 
 def main():
+    #Cargamos la identidad del nodo y su llave privada para poder firmar despues
     node_name, priv_key = get_identity()
     if not node_name:
-        print("Error: Could not find private_key.pem or node identity.")
+        print("Error: No se encontro private_key.pem o la identidad del nodo.")
         return
 
-    # Connection to Local P2P Node
+
+    #Configuramos la conexion local
     my_port = get_node_port(node_name)
     base_url = f"http://localhost:{my_port}"
 
     db_path = "blockchain.db"
-    # We initialize Node in Read-Only mode just for querying data
+    #Iniciamos el nodo en modo lectura para consultar datos de la base de datos
     node = BlockchainNode(node_name, db_path)
+    
+    #Obtenemos nuestra clave publica que servira como nuestra direccion
     sender_pub = node.get_public_key_by_name(node_name)
 
     if not sender_pub:
-        print(f"Error: Public Key for {node_name} not found in DB.")
+        print(f"Error: La clave publica para {node_name} no se encontro en la base de datos.")
         return
 
     while True:
         print(f"\n{'=' * 40}")
-        print(f" {node_name.upper()} WALLET (Port {my_port})")
+        print(f" BILLETERA DE {node_name.upper()} (Puerto {my_port})")
         print(f"{'=' * 40}")
-        print("1. Extract Resource   (E)")
-        print("2. Manufacture Goods  (M)")
-        print("3. Ship Goods         (S)")
-        print("4. Destroy Goods      (D)")
-        print("5. Vote for Delegate  (V)")
-        print("6. Quit               (Q)")
+        print("1. Extraer Recursos      (E)")
+        print("2. Manufacturar Bienes   (M)")
+        print("3. Enviar Mercancia      (S)")
+        print("4. Destruir Mercancia    (D)")
+        print("5. Votar por Delegado    (V)")
+        print("6. Salir                 (Q)")
         print(f"{'-' * 40}")
 
-        choice = input("Select Action: ").upper().strip()
+        choice = input("Selecciona una Accion: ").upper().strip()
 
         if choice in ["6", "Q"]:
-            print("Exiting...")
+            print("Saliendo...")
             break
+        txs = []
 
-        txs = []  # Batch list
 
-        # --- 1. EXTRACT ---
+        #Opcion 1 Extraer recursos crea nuevos bienes en el sistema
         if choice in ["1", "E"]:
             with sqlite3.connect(db_path) as conn:
                 goods = conn.execute(
                     "SELECT good_id, name, unit_of_measure FROM goods"
                 ).fetchall()
 
-            print("\n[ Extract New Resources ]")
+            print("\n[ Extraer Nuevos Recursos ]")
             sel = select_from_menu(
-                goods, "Select Resource Type", lambda x: f"{x[1]} ({x[0]})"
+                goods, "Selecciona Tipo de Recurso", lambda x: f"{x[1]} ({x[0]})"
             )
             if sel:
                 try:
-                    qty = float(input(f"Quantity ({sel[2]}): "))
-                    loc = input("Current Location: ")
+                    qty = float(input(f"Cantidad ({sel[2]}): "))
+                    loc = input("Ubicacion Actual: ")
 
                     new_ship_id = f"SHIP-{random.randint(10000, 99999)}"
+                    
+                    #Creamos la transaccion para registrar la extraccion del recurso
                     txs.append(
                         Transaction(
                             sender_pub,
@@ -130,23 +145,25 @@ def main():
                             qty,
                         )
                     )
-                    print(f"   -> Queued: Extract {qty} {sel[1]}")
+                    print(f"   -> En cola: Extraer {qty} {sel[1]}")
                 except ValueError:
-                    print("Invalid quantity.")
+                    print("Cantidad invalida.")
 
-        # --- 2. MANUFACTURE (Consume Inputs -> Create Output) ---
+        #Opcion 2 Manufacturar consume insumos y crea un producto nuevo
         elif choice in ["2", "M"]:
-            print("\n[ Manufacture Goods ]")
+            print("\n[ Manufacturar Bienes ]")
 
-            # Step A: Inputs
-            print("--- Step 1: Select Input Materials ---")
+            #Paso 1 Seleccionamos que materiales vamos a usar del inventario
+            print(" Paso 1: Seleccionar Materiales de Entrada ")
             processing_inputs = []
+
 
             while True:
                 with sqlite3.connect(db_path) as conn:
                     selected_ids = [i["id"] for i in processing_inputs]
-                    # Only select active shipments (is_active=1)
+                    #Buscamos solo los envios activos que nos pertenecen
                     query = "SELECT shipment_id, g.name, s.quantity, g.unit_of_measure, g.good_id FROM shipments s JOIN goods g ON s.good_id=g.good_id WHERE s.current_owner_pk=? AND s.is_active=1"
+                    
                     if selected_ids:
                         placeholders = ",".join("?" for _ in selected_ids)
                         query += f" AND s.shipment_id NOT IN ({placeholders})"
@@ -158,14 +175,14 @@ def main():
 
                 if not ships:
                     if not processing_inputs:
-                        print("  (No active inventory available)")
+                        print("  (No tienes inventario activo disponible)")
                         break
-                    print("  (No more items available)")
+                    print("  (No hay mas items disponibles)")
                     break
 
                 sel = select_from_menu(
                     ships,
-                    "Your Inventory",
+                    "Tu Inventario",
                     lambda x: f"{x[0]} - {x[1]} ({x[2]} {x[3]})",
                 )
                 if not sel:
@@ -173,9 +190,9 @@ def main():
 
                 current_qty = sel[2]
                 try:
-                    use_qty = float(input(f"Quantity to use (Max {current_qty}): "))
+                    use_qty = float(input(f"Cantidad a usar (Max {current_qty}): "))
                     if use_qty <= 0 or use_qty > current_qty:
-                        print(f"Error: You have {current_qty} but entered {use_qty}.")
+                        print(f"Error: Tienes {current_qty} pero ingresaste {use_qty}.")
                         continue
 
                     processing_inputs.append(
@@ -188,54 +205,56 @@ def main():
                             "unit": sel[3],
                         }
                     )
-                    print(f"   -> Added {use_qty} of {sel[1]} to inputs.")
+                    print(f"   -> Agregado {use_qty} de {sel[1]} a los insumos.")
 
-                    if input("Add another input? (Y/n): ").lower() == "n":
+                    if input("Agregar otro insumo? (S/n): ").lower() == "n":
                         break
                 except ValueError:
-                    print("Invalid number.")
+                    print("Numero invalido.")
                     continue
 
             if not processing_inputs:
                 continue
 
-            # Step B: Output & Location
-            print("\n--- Step 2: Define Output ---")
+            #Paso 2 Definimos que producto vamos a crear con esos insumos
+            print("\n Paso 2: Definir Producto de Salida ")
             with sqlite3.connect(db_path) as conn:
                 goods = conn.execute(
                     "SELECT good_id, name, unit_of_measure FROM goods"
                 ).fetchall()
 
             out_sel = select_from_menu(
-                goods, "Select Output Product", lambda x: f"{x[1]} ({x[0]})"
+                goods, "Selecciona Producto Final", lambda x: f"{x[1]} ({x[0]})"
             )
             if not out_sel:
                 continue
 
+
             try:
-                out_qty = float(input(f"Quantity Produced ({out_sel[2]}): "))
-                prod_loc = input("Production Location (applied to inputs & output): ")
+                out_qty = float(input(f"Cantidad Producida ({out_sel[2]}): "))
+                prod_loc = input("Ubicacion de Produccion: ")
 
                 input_ids = []
-                # 1. Update Inputs
+                
+                #Actualizamos los insumos para marcarlos como consumidos o reducidos
                 for item in processing_inputs:
                     input_ids.append(item["id"])
                     remaining = item["total"] - item["used"]
 
                     if remaining == 0:
-                        # Fully consumed -> CONSUMED (New Action Type)
+                        #Si se usa todo marcamos como consumido
                         txs.append(
                             Transaction(
                                 sender_pub,
                                 sender_pub,
                                 item["id"],
                                 ActionType.CONSUMED,
-                                "Consumed in Manufacturing",
+                                "Consumido en Manufactura",
                                 metadata={"product": out_sel[1]},
                             )
                         )
                     else:
-                        # Partially consumed -> RECEIVED at new location with new quantity
+                        #Si sobra actualizamos la cantidad restante
                         txs.append(
                             Transaction(
                                 sender_pub,
@@ -248,7 +267,8 @@ def main():
                             )
                         )
 
-                # 2. Create Output -> MANUFACTURED with Metadata
+
+                #Creamos la transaccion del producto nuevo vinculando los insumos usados
                 new_product_id = f"SHIP-{random.randint(10000, 99999)}"
                 txs.append(
                     Transaction(
@@ -264,24 +284,23 @@ def main():
                 )
 
                 print(
-                    f"\nSummary: Consuming {len(processing_inputs)} inputs -> Creating {out_qty} {out_sel[1]}"
+                    f"\nResumen: Consumiendo {len(processing_inputs)} insumos -> Creando {out_qty} {out_sel[1]}"
                 )
 
             except ValueError:
-                print("Invalid output quantity.")
+                print("Cantidad de salida invalida.")
                 continue
 
-        # --- 3. SHIP ---
+        #Opcion 3 Enviar mercancia transfiere la propiedad a otro nodo
         elif choice in ["3", "S"]:
             with sqlite3.connect(db_path) as conn:
                 ships = conn.execute(
                     "SELECT shipment_id, g.name, s.current_location FROM shipments s JOIN goods g ON s.good_id=g.good_id WHERE s.current_owner_pk=? AND s.is_active=1",
                     (sender_pub,),
                 ).fetchall()
-
-            print("\n[ Ship Goods ]")
+            print("\n[ Enviar Mercancia ]")
             sel = select_from_menu(
-                ships, "Your Inventory", lambda x: f"{x[0]} - {x[1]} at {x[2]}"
+                ships, "Tu Inventario", lambda x: f"{x[0]} - {x[1]} en {x[2]}"
             )
             if sel:
                 with sqlite3.connect(db_path) as conn:
@@ -291,43 +310,44 @@ def main():
                     ).fetchall()
 
                 rec = select_from_menu(
-                    partners, "Select Receiver", lambda x: f"{x[0]} ({x[1]})"
+                    partners, "Selecciona Receptor", lambda x: f"{x[0]} ({x[1]})"
                 )
                 if rec:
                     rec_pub = node.get_public_key_by_name(rec[0])
-                    loc = input("New Location (e.g., 'In Transit'): ")
+                    loc = input("Nueva Ubicacion: ")
+                    
+                    #Generamos la transaccion de envio cambiando el propietario
                     txs.append(
                         Transaction(
                             sender_pub, rec_pub, sel[0], ActionType.SHIPPED, loc
                         )
                     )
 
-        # --- 4. DESTROY ---
+        #Opcion 4 Destruir mercancia la retira del inventario activo
         elif choice in ["4", "D"]:
             with sqlite3.connect(db_path) as conn:
                 ships = conn.execute(
                     "SELECT shipment_id, g.name FROM shipments s JOIN goods g ON s.good_id=g.good_id WHERE s.current_owner_pk=? AND s.is_active=1",
                     (sender_pub,),
                 ).fetchall()
-
-            print("\n[ Destroy Goods ]")
+            print("\n[ Destruir Mercancia ]")
             sel = select_from_menu(
-                ships, "Select Item to Destroy", lambda x: f"{x[0]} ({x[1]})"
+                ships, "Selecciona Item a Destruir", lambda x: f"{x[0]} ({x[1]})"
             )
             if sel:
-                reason = input("Reason: ")
+                reason = input("Razon: ")
                 txs.append(
                     Transaction(
                         sender_pub,
                         sender_pub,
                         sel[0],
                         ActionType.DESTROYED,
-                        "Destroyed",
+                        "Destruido",
                         metadata={"reason": reason},
                     )
                 )
 
-        # --- 5. VOTE ---
+        #Opcion 5 Votar por delegado genera una transaccion especial de voto
         elif choice in ["5", "V"]:
             with sqlite3.connect(db_path) as conn:
                 partners = conn.execute(
@@ -335,59 +355,63 @@ def main():
                     (node_name,),
                 ).fetchall()
 
-            print("\n[ Vote for Delegate ]")
+            print("\n[ Votar por Delegado ]")
             rec = select_from_menu(
-                partners, "Candidates", lambda x: f"{x[0]} (Current Votes: {x[1]})"
+                partners, "Candidatos", lambda x: f"{x[0]} (Votos actuales: {x[1]})"
             )
             if rec:
                 cand_pub = node.get_public_key_by_name(rec[0])
+                #Creamos la transaccion de voto
                 txs.append(
                     Transaction(
                         sender_pub,
                         cand_pub,
                         f"VOTE-{int(time.time())}",
                         ActionType.VOTE,
-                        "Ballot",
+                        "Boleta Electoral",
                     )
                 )
 
-        # --- BATCH PROCESS (Updated for Network) ---
+
+        #Procesamiento de las transacciones generadas para enviarlas a la red
         if txs:
-            print(f"\nProcessing {len(txs)} transaction(s)...")
+            print(f"\nProcesando {len(txs)} transaccion(es)...")
 
             for i, tx in enumerate(txs, 1):
-                # 1. Local Pre-Check (Optional but good UX)
+                #Hacemos una revision local basica antes de intentar enviar
                 is_valid_logic, error_msg = node.validate_smart_contract_rules(tx)
                 if not is_valid_logic:
-                    print(f"    [!] Tx {i}/{len(txs)} FAILED LOCAL CHECK: {error_msg}")
+                    print(f"    [!] Tx {i}/{len(txs)} FALLO CHEQUEO LOCAL: {error_msg}")
                     continue
 
-                # 2. Sign
+                #Aqui aplicamos la firma digital usando nuestra clave privada para asegurar que somos nosotros
                 if tx.sign_transaction(priv_key):
-                    # 3. Send to Local P2P Node via HTTP
+                    
+                    #Preparamos los datos y adjuntamos la firma generada
                     payload = tx.to_dict()
                     payload["signature"] = tx.signature
 
                     try:
+                        #Enviamos la transaccion al nodo local mediante HTTP
                         resp = requests.post(
                             f"{base_url}/transaction", json=payload, timeout=2
                         )
                         if resp.status_code == 201:
                             print(
-                                f"    [+] Tx {i}/{len(txs)} Broadcasted ({tx.action})"
+                                f"    [+] Tx {i}/{len(txs)} Transmitida exitosamente ({tx.action})"
                             )
                         else:
                             print(
-                                f"    [!] Tx {i}/{len(txs)} Rejected by Node: {resp.text}"
+                                f"    [!] Tx {i}/{len(txs)} Rechazada por el Nodo: {resp.text}"
                             )
                     except requests.exceptions.ConnectionError:
                         print(
-                            f"    [X] Error: Could not connect to {base_url}. Is 'p2p.py' running?"
+                            f"    [X] Error: No se pudo conectar a {base_url} esta corriendo p2p?"
                         )
                 else:
-                    print(f"    [!] Tx {i}/{len(txs)} Signing Failed.")
+                    print(f"    [!] Tx {i}/{len(txs)} Fallo al Firmar.")
 
-            input("\nBatch complete. Press Enter to return to menu...")
+            input("\nLote completado. Presiona Enter para volver al menu...")
 
 
 if __name__ == "__main__":

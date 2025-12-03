@@ -1,14 +1,15 @@
 #!/bin/bash
 
-echo "--- Stopping Blockchain Network ---"
+echo "--- Deteniendo la Red Blockchain ---"
 
-# Find PIDs of python processes running p2p.py
+
+#Buscamos los IDs de los procesos de python que estan ejecutando p2p.py
 pids=$(pgrep -f "p2p.py")
 
 if [ -z "$pids" ]; then
-  echo "No nodes running."
+  echo "No hay nodos corriendo."
 else
-  echo "Killing processes: $pids"
+  echo "Matando procesos: $pids"
   kill $pids
-  echo "All nodes stopped."
+  echo "Todos los nodos se detuvieron."
 fi

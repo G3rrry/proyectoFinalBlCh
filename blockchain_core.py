@@ -8,8 +8,9 @@ from typing import List, Dict, Any
 from ecdsa import SigningKey, VerifyingKey, SECP256k1, BadSignatureError
 
 
-# --- Data Models ---
+#Modelos de Datos
 class ActionType(Enum):
+    #Definimos las acciones que pueden ocurrir 
     EXTRACTED = "EXTRACTED"
     MANUFACTURED = "MANUFACTURED"
     SHIPPED = "SHIPPED"
@@ -37,6 +38,7 @@ class Transaction:
         self.sender = sender_public_key
         self.receiver = receiver_public_key
         self.shipment_id = shipment_id
+        #Aseguramos que la accion se guarde como texto simple
         self.action = action.value if isinstance(action, ActionType) else action
         self.location = location
         self.good_id = good_id
@@ -44,9 +46,11 @@ class Transaction:
         self.metadata = metadata if metadata else {}
         self.timestamp = timestamp if timestamp else time.time()
         self.signature = signature
+        #Calculamos el hash unico de la transaccion al momento de crearla
         self.tx_hash = self.calculate_hash()
 
     def to_dict(self):
+        #Convertimos el objeto a diccionario para poder guardarlo o enviarlo facil
         return {
             "sender": self.sender,
             "receiver": self.receiver,
@@ -59,20 +63,24 @@ class Transaction:
             "metadata": self.metadata,
         }
 
+
     def calculate_hash(self):
+        #Aqui usamos SHA256 para crear una huella digital unica de la transaccion y asegurar integridad
         tx_string = json.dumps(self.to_dict(), sort_keys=True)
         return hashlib.sha256(tx_string.encode()).hexdigest()
 
     def sign_transaction(self, private_key_hex: str):
+        #Usamos criptografia asimetrica para firmar la transaccion y garantizar que realmente fuimos nosotros
         try:
             sk = SigningKey.from_string(bytes.fromhex(private_key_hex), curve=SECP256k1)
             self.signature = sk.sign(self.calculate_hash().encode()).hex()
             return True
         except Exception as e:
-            print(f"Error signing: {e}")
+            print(f"Error al firmar: {e}")
             return False
 
     def is_valid(self):
+        #Verificamos matematicamente que la firma coincida con la clave publica del emisor
         if not self.signature:
             return False
         try:
@@ -82,7 +90,6 @@ class Transaction:
             )
         except (BadSignatureError, ValueError):
             return False
-
 
 class Block:
     def __init__(
@@ -99,10 +106,13 @@ class Block:
         self.transactions = transactions
         self.previous_hash = previous_hash
         self.validator = validator_address
+        #Calculamos la raiz de Merkle para resumir todas las transacciones en un solo hash
         self.merkle_root = self.compute_merkle_root()
+        #Generamos el hash del bloque para hacerlo inmutable
         self.hash = hash if hash else self.calculate_block_hash()
 
     def compute_merkle_root(self):
+        #Implementamos un Arbol de Merkle para agrupar eficientemente todos los hashes de las transacciones
         if not self.transactions:
             return ""
         hashes = [tx.tx_hash for tx in self.transactions]
@@ -117,6 +127,7 @@ class Block:
         return hashes[0]
 
     def calculate_block_hash(self):
+        #Creamos el hash del bloque vinculandolo con el anterior para formar la cadena irrompible
         data = {
             "index": self.index,
             "timestamp": self.timestamp,
@@ -127,6 +138,7 @@ class Block:
         return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
     def to_json(self):
+        #Preparamos el bloque en formato JSON para guardarlo
         return json.dumps(
             {
                 "index": self.index,
@@ -142,8 +154,10 @@ class Block:
             }
         )
 
+
     @staticmethod
     def from_json(json_str):
+        #Reconstruimos el bloque desde el texto JSON que recibimos
         d = json.loads(json_str)
         txs = [
             Transaction(
@@ -170,28 +184,33 @@ class Block:
         )
 
 
-# --- Blockchain Node Logic ---
+#Logica principal del Nodo Blockchain
 class BlockchainNode:
     def __init__(self, node_name="Unknown", db_path="blockchain.db"):
         self.node_name = node_name
         self.db_file = db_path
         self.init_db()
-
     def init_db(self):
+        #Preparamos las tablas de la base de datos para guardar bloques y participantes
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
+        #Tabla para guardar la cadena de bloques completa
         cursor.execute(
             "CREATE TABLE IF NOT EXISTS blocks (block_index INTEGER PRIMARY KEY, block_hash TEXT UNIQUE, previous_hash TEXT, validator TEXT, timestamp REAL, data TEXT)"
         )
+        #Tabla para los participantes donde guardamos sus votos y reputacion
         cursor.execute(
             "CREATE TABLE IF NOT EXISTS participants (name TEXT UNIQUE, public_key TEXT PRIMARY KEY, role TEXT, reputation INTEGER DEFAULT 10, votes INTEGER DEFAULT 0)"
         )
+        #Tabla para el catalogo de productos disponibles
         cursor.execute(
             "CREATE TABLE IF NOT EXISTS goods (good_id TEXT PRIMARY KEY, name TEXT, unit_of_measure TEXT)"
         )
+        #Tabla para rastrear el estado actual de cada envio
         cursor.execute(
             "CREATE TABLE IF NOT EXISTS shipments (shipment_id TEXT PRIMARY KEY, good_id TEXT, quantity REAL, current_owner_pk TEXT, current_location TEXT, last_action TEXT, last_updated_timestamp REAL, is_active INTEGER DEFAULT 1)"
         )
+        #Tabla temporal para transacciones que aun no estan en un bloque
         cursor.execute(
             "CREATE TABLE IF NOT EXISTS mempool (tx_hash TEXT PRIMARY KEY, data TEXT, timestamp REAL)"
         )
@@ -199,36 +218,45 @@ class BlockchainNode:
         conn.close()
 
     def select_validator(self, previous_block_hash, seed_offset=0):
+        #Aqui seleccionamos al validador basandonos en votos en lugar de usar energia de minado
         with sqlite3.connect(self.db_file) as conn:
+            #Buscamos a los 3 participantes con mas votos
             delegates = conn.execute(
                 "SELECT name FROM participants ORDER BY votes DESC, name ASC LIMIT 3"
             ).fetchall()
 
         if not delegates:
+            #Si no hay votos usamos un respaldo para que la red no se detenga
             with sqlite3.connect(self.db_file) as conn:
                 fallback = conn.execute(
                     "SELECT name FROM participants LIMIT 1"
                 ).fetchone()
             return fallback[0] if fallback else "Unknown"
 
+        #Usamos el hash anterior para elegir aleatoriamente uno de los delegados top
         seed_str = f"{previous_block_hash}{seed_offset}"
         seed_int = int(hashlib.sha256(seed_str.encode()).hexdigest(), 16)
         winner_index = seed_int % len(delegates)
         return delegates[winner_index][0]
 
+
     def validate_smart_contract_rules(
         self, tx: Transaction, temp_state: Dict[str, Any] = None
     ):
+        #Estas son las reglas del contrato inteligente que validan la logica de negocio
+        #Regla para validar votos electorales
         if tx.action == "VOTE":
             with sqlite3.connect(self.db_file) as conn:
                 exists = conn.execute(
                     "SELECT 1 FROM participants WHERE public_key=?", (tx.receiver,)
                 ).fetchone()
-            return (True, "Valid Vote") if exists else (False, "Candidate unknown")
+            return (True, "Voto Valido") if exists else (False, "Candidato desconocido")
 
         shipment_data = None
         found_in_temp = False
 
+
+        #Revisamos si el estado cambio recientemente en este bloque
         if temp_state and tx.shipment_id in temp_state:
             shipment_data = temp_state[tx.shipment_id]
             found_in_temp = True
@@ -240,52 +268,63 @@ class BlockchainNode:
                     (tx.shipment_id,),
                 ).fetchone()
 
+        #Reglas para cuando se crea un nuevo activo en la red
         if tx.action in ["EXTRACTED", "MANUFACTURED"]:
             if shipment_data:
                 _, _, is_active = shipment_data
                 if is_active == 1:
-                    return False, f"Shipment {tx.shipment_id} already active."
-            return True, f"Valid {tx.action} (New Asset)"
+                    return False, f"El envio {tx.shipment_id} ya esta activo."
+            return True, f"Valido {tx.action} como Nuevo Activo"
 
         if not shipment_data:
-            return False, f"Shipment {tx.shipment_id} does not exist."
+            return False, f"El envio {tx.shipment_id} no existe."
 
         current_owner, last_action, is_active = shipment_data
 
+        #Verificamos que el producto no haya sido destruido o consumido antes
         if is_active == 0:
-            return False, f"Shipment {tx.shipment_id} is inactive."
+            return False, f"El envio {tx.shipment_id} esta inactivo."
+        
+        #Regla de propiedad solo el dueño actual puede mover la mercancia
         if tx.sender != current_owner:
-            return False, f"Sender is not the current owner."
+            return False, f"El emisor no es el propietario actual."
 
-        return True, "Smart Contract Validated"
+        return True, "Reglas del Contrato Validadas"
 
     def receive_block(self, block: Block):
+        #Procesamos un bloque que nos llego de la red
         is_valid, reason = self.validate_block(block)
         if is_valid:
             self.save_block_to_db(block)
             self.clear_mempool(block.transactions)
-            return True, "Accepted"
-        return False, f"Rejected ({reason})"
+            return True, "Aceptado"
+        return False, f"Rechazado por {reason}"
 
     def validate_block(self, block: Block):
+        #Hacemos chequeos de seguridad antes de aceptar un bloque nuevo
         last_block = self.get_last_block()
+        
+        #Validacion especial para el primer bloque de la cadena
         if block.index == 1:
             if last_block:
-                return False, "Genesis exists"
+                return False, "El Genesis ya existe"
             if block.previous_hash != "0" * 64:
-                return False, "Bad Genesis"
-            return True, "Valid Genesis"
+                return False, "Genesis Incorrecto"
+            return True, "Genesis Valido"
+
+
         if not last_block:
-            return False, "Gap detected"
+            return False, "Falta el bloque anterior"
         if block.index != last_block.index + 1:
-            return False, "Invalid Index"
+            return False, "El indice no es consecutivo"
         if block.previous_hash != last_block.hash:
-            return False, "Broken Chain"
+            return False, "La cadena esta rota el hash previo no coincide"
         if block.hash != block.calculate_block_hash():
-            return False, "Invalid Hash"
-        return True, "Valid"
+            return False, "El hash del bloque es invalido datos alterados"
+        return True, "Bloque Valido"
 
     def save_block_to_db(self, block: Block):
+        #Guardamos el bloque y actualizamos el estado actual de todos los objetos
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
         try:
@@ -301,6 +340,8 @@ class BlockchainNode:
                 ),
             )
 
+
+            #Actualizamos las tablas segun lo que paso en cada transaccion
             for tx in block.transactions:
                 if tx.action == "VOTE":
                     cursor.execute(
@@ -344,17 +385,19 @@ class BlockchainNode:
         finally:
             conn.close()
 
+
     def add_to_mempool(self, tx: Transaction):
+        #Agregamos una transaccion a la lista de espera
         if not tx.is_valid():
-            return False, "Invalid Signature"
+            return False, "Firma digital invalida"
         conn = sqlite3.connect(self.db_file)
         try:
-            # CHECK FOR DUPLICATE FIRST to support gossiping
+            #Verificamos si ya tenemos esta transaccion para no duplicarla
             cursor = conn.execute(
                 "SELECT 1 FROM mempool WHERE tx_hash = ?", (tx.tx_hash,)
             )
             if cursor.fetchone():
-                return False, "Duplicate"
+                return False, "Transaccion duplicada"
 
             tx_data = tx.to_dict()
             tx_data["signature"] = tx.signature
@@ -367,9 +410,9 @@ class BlockchainNode:
             return False, str(e)
         finally:
             conn.close()
-        return True, "Added"
-
+        return True, "Agregada a mempool"
     def get_mempool_transactions(self):
+        #Recuperamos todas las transacciones pendientes en orden de llegada
         conn = sqlite3.connect(self.db_file)
         rows = conn.execute(
             "SELECT data FROM mempool ORDER BY timestamp ASC"
@@ -394,13 +437,16 @@ class BlockchainNode:
         return txs
 
     def clear_mempool(self, processed_txs: List[Transaction]):
+        #Limpiamos de la lista de espera las transacciones que ya se procesaron
         conn = sqlite3.connect(self.db_file)
         for tx in processed_txs:
             conn.execute("DELETE FROM mempool WHERE tx_hash = ?", (tx.tx_hash,))
         conn.commit()
         conn.close()
 
+
     def get_last_block(self):
+        #Buscamos cual es el ultimo bloque aceptado en la cadena
         conn = sqlite3.connect(self.db_file)
         row = conn.execute(
             "SELECT data FROM blocks ORDER BY block_index DESC LIMIT 1"
@@ -416,7 +462,9 @@ class BlockchainNode:
         conn.close()
         return Block.from_json(row[0]) if row else None
 
+
     def load_chain(self):
+        #Cargamos toda la historia de bloques desde el principio
         conn = sqlite3.connect(self.db_file)
         rows = conn.execute(
             "SELECT data FROM blocks ORDER BY block_index ASC"
@@ -430,6 +478,7 @@ class BlockchainNode:
                 "SELECT public_key FROM participants WHERE name = ?", (name,)
             ).fetchone()
         return res[0] if res else None
+
 
     def get_name_by_public_key(self, pk):
         with sqlite3.connect(self.db_file) as conn:

@@ -1,26 +1,26 @@
 #!/bin/bash
 
-# Map of Node Names to Ports
+#Mapa de nombres de nodos a puertos
 declare -A nodes
 nodes=(
-  ["Truck_Fleet_Alpha"]=5001
-  ["TechFoundry_Inc"]=5002
-  ["Pacific_Logistics"]=5003
-  ["OPEC_Supplier"]=5004
-  ["Mega_Consumer_Goods"]=5005
-  ["GlobalMining_Corp"]=5006
-  ["FreightTrain_Express"]=5007
-  ["Drone_Delivery_X"]=5008
-  ["Corner_Store"]=5009
-  ["CleanWater_Services"]=5010
-  ["CargoShip_EverGiven"]=5011
+  ["Flota_Camiones_Alfa"]=5001
+  ["Fabrica_Tech_Inc"]=5002
+  ["Logistica_Pacifico"]=5003
+  ["Proveedor_Petroleo"]=5004
+  ["Mega_Tienda_Consumo"]=5005
+  ["Mina_Global_Corp"]=5006
+  ["Tren_Carga_Express"]=5007
+  ["Drones_Entrega_X"]=5008
+  ["Tiendita_Esquina"]=5009
+  ["Servicios_Agua_Limpia"]=5010
+  ["Barco_Carga_EverGiven"]=5011
 )
 
-echo "--- Deploying and Starting Network ---"
+echo "--- Desplegando e Iniciando la Red ---"
 
-# Check if source files exist
+#verificamos que los archivos existan
 if [ ! -f "p2p.py" ] || [ ! -f "blockchain_core.py" ]; then
-  echo "Error: p2p.py or blockchain_core.py not found in current directory."
+  echo "Error: p2p.py o blockchain_core.py no encontrados en este directorio."
   exit 1
 fi
 
@@ -29,19 +29,21 @@ for folder in "${!nodes[@]}"; do
   target_dir="nodes/$folder"
 
   if [ -d "$target_dir" ]; then
-    echo "[*] Updating $folder..."
+    echo "[*] Actualizando $folder..."
 
-    # Copy latest code to node folder so they all have the fixes
+
+    #RUBRICA: Metodo de Distribucion
+    #Copiamos el codigo mas reciente a la carpeta del nodo para asegurar uniformidad
     cp p2p.py "$target_dir/"
     cp blockchain_core.py "$target_dir/"
 
-    echo "    Starting on port $port..."
-    # Run in background, redirect logs
+    echo "    Iniciando en puerto $port..."
+    #Ejecutamos en segundo plano (background) y redirigimos logs
     (cd "$target_dir" && python3 p2p.py --port $port >node.log 2>&1 &)
   else
-    echo "[!] Warning: Directory $target_dir not found."
+    echo "[!] Advertencia: La carpeta $target_dir no existe."
   fi
 done
 
-echo "--- Network Started ---"
-echo "Logs are located in each node's folder (e.g., nodes/Truck_Fleet_Alpha/node.log)"
+echo "--- Red Iniciada Exitosamente ---"
+echo "Los logs estan en la carpeta de cada nodo (ej. nodes/Flota_Camiones_Alfa/node.log)"

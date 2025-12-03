@@ -116,6 +116,7 @@ with tab1:
     
     with col_izq:
 
+
         st.info("Selecciona la acción a realizar en la red:")
         action = st.radio(
             "Tipo de Operación",
@@ -132,13 +133,14 @@ with tab1:
             conn = get_db_connection(selected_node)
             try:
                 goods = pd.read_sql("SELECT * FROM goods", conn)
-                conn.close()
+
                 good_sel = container.selectbox("Recurso", goods["name"] + " (" + goods["unit_of_measure"] + ")")
                 good_id = goods[goods["name"] == good_sel.split(" (")[0]]["good_id"].values[0]
             except:
                 container.error("No se pudo leer la tabla de bienes.")
                 good_id = None
-
+            finally:
+                conn.close()
             
             c1, c2 = container.columns(2)
             qty = c1.number_input("Cantidad", min_value=1.0, value=100.0)
@@ -160,19 +162,27 @@ with tab1:
             container.subheader("🚚 Enviar Mercancía")
             
             conn = get_db_connection(selected_node)
-            inv = pd.read_sql(f"SELECT shipment_id, quantity FROM shipments WHERE current_owner_pk='{pub_key}' AND is_active=1", conn)
+
+            query = f"""
+                SELECT s.shipment_id, s.quantity, s.current_location, g.name, g.unit_of_measure 
+                FROM shipments s 
+                JOIN goods g ON s.good_id = g.good_id
+                WHERE s.current_owner_pk='{pub_key}' AND s.is_active=1
+            """
+            inv = pd.read_sql(query, conn)
             conn.close()
             
             if inv.empty:
                 container.warning("⚠️ Tu inventario está vacío. No puedes enviar nada.")
             else:
-                ship_sel = container.selectbox("Selecciona Lote", inv["shipment_id"] + " | Cant: " + inv["quantity"].astype(str))
+
+                opciones = inv.apply(lambda x: f"{x['shipment_id']} | {x['name']} ({x['quantity']} {x['unit_of_measure']})", axis=1)
+                ship_sel = container.selectbox("Selecciona Lote", opciones)
                 ship_id = ship_sel.split(" |")[0]
                 
                 receivers = [p for p in PEERS.keys() if p != selected_node]
                 dest = container.selectbox("Destinatario", receivers)
                 
-
                 conn = get_db_connection(selected_node)
                 dest_pk = conn.execute("SELECT public_key FROM participants WHERE name=?", (dest,)).fetchone()[0]
                 conn.close()
@@ -189,11 +199,10 @@ with tab1:
                     else:
                         st.error(f"Error: {res}")
 
-        #MANUFACTURA 
+        #MANUFACTURA REAL
         elif action == "Manufacturar":
             container.subheader("🏭 Manufactura (Insumos -> Producto)")
             
-
             if 'lista_insumos' not in st.session_state:
                 st.session_state.lista_insumos = []
 
@@ -205,28 +214,29 @@ with tab1:
                 
 
                 query = f"""
-                    SELECT s.shipment_id, s.quantity, s.good_id, g.unit_of_measure 
+                    SELECT s.shipment_id, s.quantity, s.good_id, g.name, g.unit_of_measure 
                     FROM shipments s
                     JOIN goods g ON s.good_id = g.good_id
                     WHERE s.current_owner_pk='{pub_key}' AND s.is_active=1
                 """
                 inv = pd.read_sql(query, conn)
-                conn.close()
+                conn.close() 
                 
-                #Filtramos lo que ya esta en el carrito
+
                 ids_en_carrito = [x['id'] for x in st.session_state.lista_insumos]
                 inv_disponible = inv[~inv['shipment_id'].isin(ids_en_carrito)]
                 
                 if inv_disponible.empty:
                     st.info("No hay más insumos.")
                 else:
-                    opciones = inv_disponible.apply(lambda x: f"{x['shipment_id']} ({x['quantity']} {x['unit_of_measure']})", axis=1)
+
+                    opciones = inv_disponible.apply(lambda x: f"{x['shipment_id']} | {x['name']} ({x['quantity']} {x['unit_of_measure']})", axis=1)
                     seleccion_texto = st.selectbox("Material", opciones)
                     
-                    id_seleccionado = seleccion_texto.split(" (")[0]
+                    id_seleccionado = seleccion_texto.split(" |")[0]
                     datos_item = inv_disponible[inv_disponible['shipment_id'] == id_seleccionado].iloc[0]
                     
-                    cantidad_usar = st.number_input("Cantidad", min_value=0.1, max_value=float(datos_item['quantity']), step=1.0)
+                    cantidad_usar = st.number_input("Cantidad a usar", min_value=0.1, max_value=float(datos_item['quantity']), step=1.0)
                     
                     if st.button("➕ Agregar"):
                         st.session_state.lista_insumos.append({
@@ -308,7 +318,6 @@ with tab1:
             container.subheader("🗳️ Votación DPoS")
             vote_for = container.selectbox("Candidato", list(PEERS.keys()))
             
-
             conn = get_db_connection(selected_node)
             cand_pk = conn.execute("SELECT public_key FROM participants WHERE name=?", (vote_for,)).fetchone()[0]
             conn.close()
@@ -325,18 +334,18 @@ with tab1:
 #PESTAÑA 2: EXPLORADOR
 with tab2:
     col_head, col_btn = st.columns([4, 1])
-    col_head.write("#### Libro Mayor")
+    col_head.write("#### Libro Mayor Inmutable (Ledger)")
     if col_btn.button("🔄 Refrescar"):
         st.rerun()
 
     try:
-
         port = PEERS[selected_node]
         chain_res = requests.get(f"http://localhost:{port}/chain", timeout=1)
         
         if chain_res.status_code == 200:
             chain_data = chain_res.json()
             st.metric("Altura de la Cadena", len(chain_data))
+            
             
             for block in reversed(chain_data):
                 icon = "⛓️" if block['index'] > 1 else "🥚"
@@ -365,12 +374,10 @@ with tab2:
 with tab3:
     st.write("#### Estado Global")
     
-    
     conn = get_db_connection(selected_node)
     inventory_df = pd.read_sql("SELECT * FROM shipments WHERE is_active=1", conn)
     votes_df = pd.read_sql("SELECT name, votes, role FROM participants ORDER BY votes DESC", conn)
     
-
     parts = conn.execute("SELECT public_key, name FROM participants").fetchall()
     participant_map = {pk: name for pk, name in parts}
     conn.close()
@@ -398,7 +405,4 @@ with tab3:
 
     with c2:
         st.subheader("📊 Votos")
-        def highlight_top3(row):
-            return ['background-color: #d1e7dd']*len(row) if row.name < 3 else ['']*len(row)
-            
-        st.dataframe(votes_df[["name", "votes"]].style.apply(highlight_top3, axis=1), use_container_width=True)
+        st.dataframe(votes_df[["name", "votes"]], use_container_width=True, hide_index=True)
